@@ -1,11 +1,27 @@
 import React, { useState } from 'react';
 import { ArrowUpCircle, CheckCircle2, Download, RefreshCw, X } from 'lucide-react';
-import { downloadAndApplyUpdate, UpdateCheckResult } from '../utils/tauriBridge';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { downloadAndApplyUpdate, isTauriEnvironment, UpdateCheckResult } from '../utils/tauriBridge';
 
 interface UpdateToastProps {
   updateInfo: UpdateCheckResult | null;
   manualCheckTriggered: boolean;
   onDismiss: () => void;
+}
+
+function formatReleaseNotesSummary(raw: string): string {
+  if (!raw) return 'Nouvelle version avec performances accrues et correctifs.';
+  const lines = raw
+    .split('\n')
+    .map((l) =>
+      l
+        .replace(/^[#*>\s\-]+/, '')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .trim()
+    )
+    .filter((l) => l.length > 0 && !l.startsWith('http') && !l.toLowerCase().includes('télécharger'));
+  return lines.slice(0, 2).join(' · ') || 'Mise à jour prête pour installation.';
 }
 
 export const UpdateToast: React.FC<UpdateToastProps> = ({
@@ -22,8 +38,8 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
 
   const handleApplyUpdate = async () => {
     setUpdating(true);
-    setProgress(5);
-    setStatusMessage('Initialisation de la mise à jour...');
+    setProgress(10);
+    setStatusMessage('Téléchargement de la mise à jour...');
     try {
       const url =
         updateInfo.download_url ||
@@ -33,7 +49,16 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
         setStatusMessage(text);
       });
       setProgress(100);
-      setStatusMessage('Mise à jour prête ! Relance en cours...');
+      setStatusMessage('Mise à jour lancée ! Fermeture de Cursiv pour finalisation...');
+      setTimeout(async () => {
+        if (isTauriEnvironment()) {
+          try {
+            await getCurrentWindow().close();
+          } catch {
+            // ignore
+          }
+        }
+      }, 1500);
     } catch (err) {
       setStatusMessage(
         `Erreur : ${err instanceof Error ? err.message : String(err)}`
@@ -80,15 +105,10 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
         </div>
 
         <p
-          className="m-0 text-[11px] leading-relaxed"
+          className="m-0 text-[11px] leading-relaxed line-clamp-2"
           style={{ color: 'var(--meta-content-color)' }}
         >
-          {updateInfo.release_notes}
-          {updateInfo.latest_commit_sha && (
-            <span className="block font-mono mt-0.5 opacity-75">
-              branche main : #{updateInfo.latest_commit_sha.slice(0, 7)}
-            </span>
-          )}
+          {formatReleaseNotesSummary(updateInfo.release_notes)}
         </p>
 
         {updating && (
@@ -121,7 +141,7 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
             style={{ color: 'var(--text-color)' }}
           >
             <Download className="w-3 h-3" />
-            <span>Cursiv-Setup.exe</span>
+            <span>Télécharger .exe</span>
           </a>
 
           {updateInfo.update_available && (

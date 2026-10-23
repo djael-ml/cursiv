@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_REPO: &str = "djael-ml/cursiv";
@@ -121,7 +121,7 @@ pub async fn check_github_updates(
         .unwrap_or_else(|| DEFAULT_REPO.to_string());
 
     let client = reqwest::Client::builder()
-        .user_agent("Cursiv-Desktop-Updater/1.14.0")
+        .user_agent("Cursiv-Desktop-Updater/1.15.0")
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
@@ -157,7 +157,7 @@ pub async fn check_github_updates(
                 update_available,
                 release_notes: release
                     .body
-                    .unwrap_or_else(|| "Performance & WYSIWYM refinements.".to_string()),
+                    .unwrap_or_else(|| "Mise à jour Cursiv disponible.".to_string()),
                 download_url,
                 html_url: release.html_url,
                 published_at: release.published_at.unwrap_or_default(),
@@ -190,7 +190,7 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
     }
 
     let client = reqwest::Client::builder()
-        .user_agent("Cursiv-Desktop-Updater/1.14.0")
+        .user_agent("Cursiv-Desktop-Updater/1.15.0")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -217,43 +217,45 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
     hasher.update(&bytes);
     let sha256_hex = format!("{:x}", hasher.finalize());
 
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
     let raw_name = download_url
         .split('/')
         .next_back()
         .filter(|n| !n.is_empty())
         .unwrap_or("Cursiv-Setup.exe");
 
-    let safe_name = Path::new(raw_name)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Cursiv-Setup.exe");
+    let is_msi = raw_name.to_lowercase().ends_with(".msi");
+    let ext = if is_msi { "msi" } else { "exe" };
 
+    // Unique filename in temp prevents any ERROR_SHARING_VIOLATION with an existing locked executable
+    let unique_filename = format!("Cursiv-Setup-{}.{}", timestamp, ext);
     let mut target_path: PathBuf = env::temp_dir();
-    target_path.push(safe_name);
+    target_path.push(&unique_filename);
 
-    let mut file = fs::File::create(&target_path)
-        .map_err(|e| format!("Failed to create temporary installer file: {}", e))?;
-    file.write_all(&bytes)
+    // Using fs::write cleanly writes and IMMEDIATELY closes the file handle!
+    // This completely resolves Windows os error 32 (Sharing Violation) when spawning the .exe!
+    fs::write(&target_path, &bytes)
         .map_err(|e| format!("Failed to write update payload: {}", e))?;
 
     #[cfg(target_os = "windows")]
     {
-        let lower = safe_name.to_lowercase();
-        if lower.ends_with(".exe") {
-            // Silent NSIS update (/S) in currentUser mode (%LOCALAPPDATA%\Programs\Cursiv)
+        if !is_msi {
+            // Launch NSIS silent installer (/S) in currentUser mode
             Command::new(&target_path)
                 .arg("/S")
                 .spawn()
                 .map_err(|e| format!("Failed to launch NSIS installer executable: {}", e))?;
-        } else if lower.ends_with(".msi") {
+        } else {
             Command::new("msiexec")
                 .arg("/i")
                 .arg(&target_path)
                 .arg("/passive")
                 .spawn()
                 .map_err(|e| format!("Failed to launch Windows MSI installer: {}", e))?;
-        } else {
-            return Err("Downloaded asset is not a valid Windows installer (.exe).".to_string());
         }
     }
 
