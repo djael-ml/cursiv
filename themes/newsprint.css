@@ -1,0 +1,20 @@
+/* Theme: Newsprint — Warm literary editorial paper with classic serif typography */
+:root {
+  --bg-color: #f3f2ee;
+  --text-color: #1f0909;
+  --md-char-color: #9e9689;
+  --meta-content-color: #6b6459;
+  --primary-color: #8b261d;
+  --border-color: #dad5c9;
+  --sidebar-bg-color: #eae7df;
+  --sidebar-text-color: #2c241d;
+  --code-bg-color: #e8e5dc;
+  --table-alt-bg: #ece9e1;
+  --blockquote-border: #b8b0a2;
+  --blockquote-text: #595247;
+  --highlight-bg: #f6e294;
+  --sequence-theme: hand;
+  --font-body: "Crimson Pro", Georgia, "Times New Roman", serif;
+  --font-heading: "Crimson Pro", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", monospace;
+}

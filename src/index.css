@@ -1,0 +1,284 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+:root {
+  --bg-color: #ffffff;
+  --text-color: #24292f;
+  --md-char-color: #8c959f;
+  --meta-content-color: #57606a;
+  --primary-color: #0969da;
+  --border-color: #d0d7de;
+  --sidebar-bg-color: #f6f8fa;
+  --sidebar-text-color: #24292f;
+  --code-bg-color: #f6f8fa;
+  --table-alt-bg: #f6f8fa;
+  --blockquote-border: #d0d7de;
+  --blockquote-text: #57606a;
+  --highlight-bg: #fff8c5;
+  --sequence-theme: simple;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --font-logo: "DM Serif Display", Georgia, serif;
+}
+
+.cursiv-brand-logo {
+  font-family: var(--font-logo);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1;
+}
+
+html, body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-family: var(--font-body);
+  transition: background-color 180ms ease, color 180ms ease;
+  margin: 0;
+  padding: 0;
+}
+
+/* Sidebar opening/closing animation: 200ms cubic-bezier(0.16, 1, 0.3, 1) */
+.cursiv-sidebar-transition {
+  transition: width 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Live Token Reveal (Zero Layout Shift) */
+.md-token-marker {
+  color: var(--md-char-color);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  font-weight: 400;
+  user-select: text;
+  transition: opacity 120ms cubic-bezier(0.22, 1, 0.36, 1),
+              max-width 120ms cubic-bezier(0.22, 1, 0.36, 1),
+              transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  display: inline-block;
+  vertical-align: baseline;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.md-token-marker-hidden {
+  opacity: 0;
+  max-width: 0;
+  pointer-events: none;
+  transform: scaleX(0.85);
+}
+
+.md-token-marker-visible {
+  opacity: 0.82;
+  max-width: 24ch;
+  transform: scaleX(1);
+}
+
+/* Word-like Fluid Typing & Gliding Caret Micro-Interactions */
+@keyframes cursivCharMaterialize {
+  0% {
+    opacity: 0.2;
+    transform: translateY(1.5px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes cursivCaretPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+.cursiv-char-glide {
+  display: inline-block;
+  animation: cursivCharMaterialize 115ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.cursiv-word-caret {
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--primary-color);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--primary-color) 35%, transparent);
+  transition: transform 68ms cubic-bezier(0.22, 1, 0.36, 1),
+              height 68ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: cursivCaretPulse 1.08s ease-in-out infinite;
+  will-change: transform, height;
+}
+
+.cursiv-transparent-textarea {
+  color: transparent !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.cursiv-transparent-textarea::selection {
+  background-color: color-mix(in srgb, var(--primary-color) 22%, transparent);
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+/* Notion-style Lasso Selection Rectangle & Block Highlight */
+.cursiv-lasso-rect {
+  background-color: color-mix(in srgb, var(--primary-color) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary-color) 55%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.cursiv-block-selected {
+  background-color: color-mix(in srgb, var(--primary-color) 11%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary-color) 11%, transparent);
+  border-radius: 6px;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.cursiv-smooth-input {
+  caret-color: var(--primary-color);
+  transition: transform 90ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 150ms ease,
+              box-shadow 150ms ease;
+}
+
+.cursiv-smooth-input:focus {
+  outline: none;
+}
+
+/* Popup micro-interaction: fade-in + scale 0.98 -> 1 */
+@keyframes cursivPopupAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.cursiv-popup-anim {
+  animation: cursivPopupAppear 140ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Floating Editor Toolbar (Glassmorphism) */
+.cursiv-glass-toolbar {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--bg-color) 84%, transparent);
+  border: 1px solid var(--border-color);
+}
+
+/* Focus Mode transitions */
+.cursiv-focus-mode .cursiv-block:not(.cursiv-block-active) {
+  opacity: 0.25;
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+              filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cursiv-focus-mode.cursiv-focus-blur .cursiv-block:not(.cursiv-block-active) {
+  filter: blur(0.45px);
+}
+
+.cursiv-focus-mode .cursiv-block.cursiv-block-active {
+  opacity: 1;
+  filter: none;
+}
+
+/* Auto-numbering Headings via CSS Counters */
+.cursiv-editor-sheet.auto-number-headings {
+  counter-reset: h1counter;
+}
+
+.cursiv-editor-sheet.auto-number-headings h1 {
+  counter-reset: h2counter;
+}
+.cursiv-editor-sheet.auto-number-headings h2 {
+  counter-reset: h3counter;
+}
+.cursiv-editor-sheet.auto-number-headings h3 {
+  counter-reset: h4counter;
+}
+.cursiv-editor-sheet.auto-number-headings h4 {
+  counter-reset: h5counter;
+}
+.cursiv-editor-sheet.auto-number-headings h5 {
+  counter-reset: h6counter;
+}
+
+.cursiv-editor-sheet.auto-number-headings h1 .heading-content::before {
+  counter-increment: h1counter;
+  content: counter(h1counter) ". ";
+  color: var(--meta-content-color);
+  font-weight: 500;
+}
+
+.cursiv-editor-sheet.auto-number-headings h2 .heading-content::before {
+  counter-increment: h2counter;
+  content: counter(h1counter) "." counter(h2counter) " ";
+  color: var(--meta-content-color);
+  font-weight: 500;
+}
+
+.cursiv-editor-sheet.auto-number-headings h3 .heading-content::before {
+  counter-increment: h3counter;
+  content: counter(h1counter) "." counter(h2counter) "." counter(h3counter) " ";
+  color: var(--meta-content-color);
+  font-weight: 500;
+}
+
+.cursiv-editor-sheet.auto-number-headings h4 .heading-content::before {
+  counter-increment: h4counter;
+  content: counter(h1counter) "." counter(h2counter) "." counter(h3counter) "." counter(h4counter) " ";
+  color: var(--meta-content-color);
+  font-weight: 500;
+}
+
+/* Custom Subtle Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--md-char-color) 35%, transparent);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--md-char-color) 65%, transparent);
+}
+
+/* Print / Native PDF Export Styling */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body, html {
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+  }
+  .cursiv-editor-sheet {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  pre, blockquote, table, figure {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}

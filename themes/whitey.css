@@ -1,0 +1,20 @@
+/* Theme: Whitey — Pure minimalist cream-white studio sheet */
+:root {
+  --bg-color: #fefefe;
+  --text-color: #2b2b2b;
+  --md-char-color: #a6a6a6;
+  --meta-content-color: #777777;
+  --primary-color: #2b6cb0;
+  --border-color: #e6e6e6;
+  --sidebar-bg-color: #f7f7f7;
+  --sidebar-text-color: #333333;
+  --code-bg-color: #f4f4f4;
+  --table-alt-bg: #f9f9f9;
+  --blockquote-border: #cccccc;
+  --blockquote-text: #666666;
+  --highlight-bg: #fef08a;
+  --sequence-theme: simple;
+  --font-body: "Crimson Pro", Georgia, serif;
+  --font-heading: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}

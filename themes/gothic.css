@@ -1,0 +1,20 @@
+/* Theme: Gothic — Ultra-clean Swiss modernist sans-serif typography */
+:root {
+  --bg-color: #fcfcfc;
+  --text-color: #111111;
+  --md-char-color: #888888;
+  --meta-content-color: #555555;
+  --primary-color: #111111;
+  --border-color: #e0e0e0;
+  --sidebar-bg-color: #f2f2f2;
+  --sidebar-text-color: #111111;
+  --code-bg-color: #f3f3f3;
+  --table-alt-bg: #f7f7f7;
+  --blockquote-border: #111111;
+  --blockquote-text: #444444;
+  --highlight-bg: #e5e5e5;
+  --sequence-theme: simple;
+  --font-body: "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-heading: "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}

@@ -1,0 +1,20 @@
+/* Theme: Pixyll — Generous whitespace and refined Merriweather + Sans balance */
+:root {
+  --bg-color: #ffffff;
+  --text-color: #333333;
+  --md-char-color: #999999;
+  --meta-content-color: #7a7a7a;
+  --primary-color: #0076df;
+  --border-color: #eeeeee;
+  --sidebar-bg-color: #fafafa;
+  --sidebar-text-color: #444444;
+  --code-bg-color: #f8f8f8;
+  --table-alt-bg: #fbfbfb;
+  --blockquote-border: #0076df;
+  --blockquote-text: #666666;
+  --highlight-bg: #fff3b0;
+  --sequence-theme: simple;
+  --font-body: "Merriweather", Georgia, serif;
+  --font-heading: "Inter", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}

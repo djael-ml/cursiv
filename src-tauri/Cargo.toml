@@ -1,0 +1,28 @@
+[package]
+name = "cursiv"
+version = "1.14.0"
+description = "Cursiv — Distraction-Free WYSIWYM Markdown Editor"
+authors = ["Cursiv Open-Source Contributors"]
+license = "MIT"
+repository = "https://github.com/djael-ml/cursiv"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "cursiv_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.1.0", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+sha2 = "0.10"
