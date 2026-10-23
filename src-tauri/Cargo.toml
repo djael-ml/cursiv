@@ -1,8 +1,8 @@
 [package]
 name = "cursiv"
 version = "1.14.0"
-description = "Cursiv — Distraction-Free WYSIWYM Markdown Editor"
-authors = ["Cursiv Open-Source Contributors"]
+description = "Cursiv — Éditeur Markdown WYSIWYM conçu par Djaël Mola"
+authors = ["Djaël Mola"]
 license = "MIT"
 repository = "https://github.com/djael-ml/cursiv"
 edition = "2021"

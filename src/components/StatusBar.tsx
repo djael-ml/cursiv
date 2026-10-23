@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Clock, Code2, Eye, Sparkles } from 'lucide-react';
+import { Clock, Code2, Eye, Sparkles, ZoomIn } from 'lucide-react';
 
 interface StatusBarProps {
   markdownText: string;
   readingSpeedWpm: number;
+  pageZoom?: number;
   focusMode: boolean;
   typewriterMode: boolean;
   sourceCodeMode: boolean;
+  onResetPageZoom?: () => void;
   onToggleFocusMode: () => void;
   onToggleTypewriterMode: () => void;
   onToggleSourceCodeMode: () => void;
@@ -37,9 +39,11 @@ function computeStats(text: string, wpm: number) {
 export const StatusBar: React.FC<StatusBarProps> = ({
   markdownText,
   readingSpeedWpm,
+  pageZoom = 100,
   focusMode,
   typewriterMode,
   sourceCodeMode,
+  onResetPageZoom,
   onToggleFocusMode,
   onToggleTypewriterMode,
   onToggleSourceCodeMode,
@@ -70,6 +74,20 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
   return (
     <div className="no-print no-export fixed bottom-3 right-5 z-30 flex items-center gap-2 select-none">
+      {/* Page Zoom Indicator (Ctrl + Molette) */}
+      {pageZoom !== 100 && (
+        <button
+          type="button"
+          onClick={onResetPageZoom}
+          className="cursiv-glass-toolbar px-2.5 py-1 rounded-full text-[11px] font-mono font-medium flex items-center gap-1 shadow-xs cursor-pointer hover:opacity-100 opacity-85 transition-opacity"
+          style={{ color: 'var(--primary-color)' }}
+          title="Cliquer pour réinitialiser l'échelle de la page à 100% (Ctrl + Molette)"
+        >
+          <ZoomIn className="w-3 h-3" />
+          <span>{pageZoom}%</span>
+        </button>
+      )}
+
       {/* Mode Quick Indicators */}
       {focusMode && (
         <button
@@ -138,8 +156,10 @@ export const StatusBar: React.FC<StatusBarProps> = ({
               color: 'var(--text-color)',
             }}
           >
-            <div className="font-semibold pb-1.5 border-b flex items-center justify-between"
-                 style={{ borderColor: 'var(--border-color)' }}>
+            <div
+              className="font-semibold pb-1.5 border-b flex items-center justify-between"
+              style={{ borderColor: 'var(--border-color)' }}
+            >
               <span>{selStats ? 'Statistiques de la sélection' : 'Statistiques du document'}</span>
               <span className="text-[10px] font-mono opacity-65">{readingSpeedWpm} mpm</span>
             </div>
@@ -163,6 +183,12 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             <div className="flex justify-between">
               <span style={{ color: 'var(--meta-content-color)' }}>Lignes</span>
               <span className="font-mono font-medium">{activeStats.lines}</span>
+            </div>
+            <div
+              className="pt-1 border-t text-[10px] opacity-60 text-right"
+              style={{ borderColor: 'var(--border-color)' }}
+            >
+              Cursiv. par Djaël Mola
             </div>
           </div>
         )}

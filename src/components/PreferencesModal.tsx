@@ -6,6 +6,7 @@ import {
   FileOutput,
   Palette,
   Sigma,
+  Sparkles,
   X,
 } from 'lucide-react';
 import {
@@ -14,7 +15,7 @@ import {
   CursivPreferences,
   EquationNumberingMode,
 } from '../types/editor';
-import { BUILTIN_THEMES } from '../utils/themeManager';
+import { BUILTIN_THEMES, DISCREET_ACCENT_PRESETS } from '../utils/themeManager';
 import { detectPandocBinary, PandocStatus } from '../utils/tauriBridge';
 
 interface PreferencesModalProps {
@@ -30,9 +31,9 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
   onUpdatePreferences,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'editor' | 'math' | 'images' | 'themes' | 'export'>(
-    'editor'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'appearance' | 'editor' | 'math' | 'images' | 'themes' | 'export'
+  >('appearance');
   const [pandocStatus, setPandocStatus] = useState<PandocStatus | null>(null);
   const [editingCssThemeId, setEditingCssThemeId] = useState<string>(preferences.theme);
 
@@ -52,11 +53,11 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
 
   return (
     <div
-      className="no-print no-export fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-xs p-4"
+      className="no-print no-export fixed inset-0 z-[150] flex items-center justify-center bg-black/45 backdrop-blur-xs p-4"
       onClick={onClose}
     >
       <div
-        className="cursiv-popup-anim w-full max-w-3xl h-[540px] rounded-2xl shadow-2xl border flex overflow-hidden text-sm"
+        className="cursiv-popup-anim w-full max-w-3xl h-[560px] rounded-2xl shadow-2xl border flex overflow-hidden text-sm"
         style={{
           backgroundColor: 'var(--bg-color)',
           borderColor: 'var(--border-color)',
@@ -66,7 +67,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
       >
         {/* Left Navigation Sidebar */}
         <div
-          className="w-52 border-r p-4 flex flex-col justify-between shrink-0"
+          className="w-56 border-r p-4 flex flex-col justify-between shrink-0"
           style={{
             backgroundColor: 'var(--sidebar-bg-color)',
             borderColor: 'var(--border-color)',
@@ -82,11 +83,12 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
 
             {(
               [
+                ['appearance', 'Curseur, Accent & Page', <Sparkles key="ap" className="w-4 h-4" />],
                 ['editor', 'Édition & Focus', <Code key="ed" className="w-4 h-4" />],
                 ['math', 'Math, Chimie & Code', <Sigma key="ma" className="w-4 h-4" />],
                 ['images', 'Images & Cloud', <Cloud key="im" className="w-4 h-4" />],
                 ['themes', 'Thèmes CSS (Hot-Reload)', <Palette key="th" className="w-4 h-4" />],
-                ['export', 'Pandoc & GitHub Update', <FileOutput key="ex" className="w-4 h-4" />],
+                ['export', 'Pandoc & Mise à jour', <FileOutput key="ex" className="w-4 h-4" />],
               ] as const
             ).map(([id, label, icon]) => (
               <button
@@ -108,8 +110,9 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
             ))}
           </div>
 
-          <div className="text-[11px] opacity-60 px-2">
-            Cursiv v1.14.0 · Licence MIT
+          <div className="text-[11px] opacity-65 px-2 leading-relaxed">
+            <div className="font-semibold">Cursiv. v1.14.0</div>
+            <div>Par Djaël Mola · Licence MIT</div>
           </div>
         </div>
 
@@ -120,7 +123,9 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
             style={{ borderColor: 'var(--border-color)' }}
           >
             <span className="font-semibold">
-              {activeTab === 'editor' && 'Édition Intelligente, Focus & Accessibilité'}
+              {activeTab === 'appearance' &&
+                "Couleur d'Accentuation, Flou de Mouvement & Échelle de la Page"}
+              {activeTab === 'editor' && 'Édition Intuitive, Focus & Raccourcis'}
               {activeTab === 'math' && 'Mathématiques (KaTeX / mhchem / Physics) & Blocs de Code'}
               {activeTab === 'images' && 'Gestion des Images Locales & Upload Cloud'}
               {activeTab === 'themes' && 'Système de Thèmes CSS avec Hot-Reload Instantané'}
@@ -136,14 +141,214 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
+            {activeTab === 'appearance' && (
+              <div className="space-y-5">
+                {/* Discreet Accent Color Picker */}
+                <div className="space-y-2.5">
+                  <div>
+                    <div className="font-semibold">
+                      Couleur d&apos;accentuation ultra-discrète (Curseur de texte & Sélection)
+                    </div>
+                    <div style={{ color: 'var(--meta-content-color)' }}>
+                      Modifie subtilement la teinte du curseur de frappe, du lasso de sélection et des indicateurs actifs
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    {DISCREET_ACCENT_PRESETS.map((preset) => {
+                      const isSelected = (preferences.accentColor || '') === preset.color;
+                      return (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => onUpdatePreferences({ accentColor: preset.color })}
+                          style={{
+                            borderColor: isSelected
+                              ? preset.color || 'var(--primary-color)'
+                              : 'var(--border-color)',
+                            backgroundColor: isSelected
+                              ? 'color-mix(in srgb, var(--primary-color) 10%, transparent)'
+                              : 'transparent',
+                          }}
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer hover:bg-black/5 dark:hover:bg-white/5"
+                        >
+                          <span
+                            className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                            style={{
+                              backgroundColor: preset.color || '#0969da',
+                            }}
+                          />
+                          <span className={isSelected ? 'font-semibold' : ''}>{preset.label}</span>
+                        </button>
+                      );
+                    })}
+
+                    <label
+                      className="flex items-center gap-2 px-2.5 py-1 rounded-lg border cursor-pointer hover:bg-black/5 dark:hover:bg-white/5"
+                      style={{ borderColor: 'var(--border-color)' }}
+                      title="Choisir une teinte personnalisée"
+                    >
+                      <input
+                        type="color"
+                        value={preferences.accentColor || '#334155'}
+                        onChange={(e) => onUpdatePreferences({ accentColor: e.target.value })}
+                        className="w-4 h-4 border-0 p-0 bg-transparent cursor-pointer"
+                      />
+                      <span>Personnalisée</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+                {/* Caret Motion Blur & Smooth Speed */}
+                <div className="space-y-3">
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <div>
+                      <div className="font-semibold">
+                        Flou de mouvement du curseur (Motion Blur cinétique)
+                      </div>
+                      <div style={{ color: 'var(--meta-content-color)' }}>
+                        Applique un léger flou directionnel et un halo doux lors des déplacements rapides du curseur
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={preferences.caretMotionBlur}
+                      onChange={(e) =>
+                        onUpdatePreferences({ caretMotionBlur: e.target.checked })
+                      }
+                    />
+                  </label>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">Fluidité de glissement du curseur</div>
+                      <div style={{ color: 'var(--meta-content-color)' }}>
+                        Vitesse d&apos;interpolation du curseur entre chaque caractère frappé
+                      </div>
+                    </div>
+                    <select
+                      value={preferences.caretSmoothSpeed || 'normal'}
+                      onChange={(e) =>
+                        onUpdatePreferences({
+                          caretSmoothSpeed: e.target.value as 'fast' | 'normal' | 'fluid',
+                        })
+                      }
+                      className="px-2.5 py-1.5 rounded border"
+                      style={{
+                        borderColor: 'var(--border-color)',
+                        backgroundColor: 'var(--bg-color)',
+                      }}
+                    >
+                      <option value="fast">Nerveux & Rapide (42 ms)</option>
+                      <option value="normal">Équilibré façon Word (68 ms)</option>
+                      <option value="fluid">Ultra-fluide & Doux (95 ms)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+                {/* Page Zoom (Ctrl + Wheel) & Max Page Width */}
+                <div className="space-y-3.5">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold">
+                          Échelle de la page ({preferences.pageZoom || 100}%)
+                        </div>
+                        <div style={{ color: 'var(--meta-content-color)' }}>
+                          Modifiable à tout moment avec <kbd className="font-mono">Ctrl + Molette</kbd> sans changer la taille de la fenêtre
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={50}
+                          max={200}
+                          step={5}
+                          value={preferences.pageZoom || 100}
+                          onChange={(e) =>
+                            onUpdatePreferences({ pageZoom: Number(e.target.value) })
+                          }
+                          className="w-28 cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onUpdatePreferences({ pageZoom: 100 })}
+                          className="px-2 py-0.5 rounded border font-mono text-[11px] hover:bg-black/5 cursor-pointer"
+                          style={{ borderColor: 'var(--border-color)' }}
+                        >
+                          100%
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">
+                        Largeur de la feuille de rédaction ({preferences.maxPageWidth || 820} px)
+                      </div>
+                      <div style={{ color: 'var(--meta-content-color)' }}>
+                        Ajuste les marges latérales de la feuille centrale
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={660}
+                        max={1200}
+                        step={20}
+                        value={preferences.maxPageWidth || 820}
+                        onChange={(e) =>
+                          onUpdatePreferences({ maxPageWidth: Number(e.target.value) })
+                        }
+                        className="w-28 cursor-pointer"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onUpdatePreferences({ maxPageWidth: 820 })}
+                        className="px-2 py-0.5 rounded border font-mono text-[11px] hover:bg-black/5 cursor-pointer"
+                        style={{ borderColor: 'var(--border-color)' }}
+                      >
+                        820px
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'editor' && (
               <>
-                <div className="space-y-3">
+                <div className="space-y-3.5">
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <div>
+                      <div className="font-semibold">
+                        Typographie intelligente automatique (Smart Typography)
+                      </div>
+                      <div style={{ color: 'var(--meta-content-color)' }}>
+                        Transforme automatiquement <code>--</code> en <code>—</code>,{' '}
+                        <code>...</code> en <code>…</code>, <code>-&gt;</code> en <code>→</code> et{' '}
+                        <code>&lt;-</code> en <code>←</code> pendant la frappe
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={preferences.smartTypography}
+                      onChange={(e) =>
+                        onUpdatePreferences({ smartTypography: e.target.checked })
+                      }
+                    />
+                  </label>
+
                   <label className="flex items-center justify-between cursor-pointer">
                     <div>
                       <div className="font-semibold">Auto Pair Parenthèses & Guillemets</div>
                       <div style={{ color: 'var(--meta-content-color)' }}>
-                        Fermeture automatique de (), [], {}, &quot;&quot; et &apos;&apos;
+                        Fermeture automatique de (), [], &#123;&#125;, &quot;&quot; et &apos;&apos;
                       </div>
                     </div>
                     <input
@@ -173,9 +378,9 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
 
                   <label className="flex items-center justify-between cursor-pointer">
                     <div>
-                      <div className="font-semibold">Barre d&apos;outils flottante Cursiv</div>
+                      <div className="font-semibold">Barre d&apos;outils flottante permanente</div>
                       <div style={{ color: 'var(--meta-content-color)' }}>
-                        Affiche la barre glassmorphism en haut de la feuille d&apos;écriture
+                        Affiche la barre glassmorphism en haut de la feuille (sinon uniquement lors d&apos;une sélection)
                       </div>
                     </div>
                     <input

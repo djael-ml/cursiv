@@ -7,6 +7,13 @@ export type CloudUploadProvider = 'none' | 'local-assets' | 's3' | 'imgur' | 'gi
 export interface CursivPreferences {
   theme: BuiltInThemeId | string;
   customThemesCss: Record<string, string>;
+  accentColor: string;
+  caretMotionBlur: boolean;
+  caretSmoothSpeed: 'fast' | 'normal' | 'fluid';
+  smartTypography: boolean;
+  pageZoom: number;
+  maxPageWidth: number;
+  sidebarWidth: number;
   showFloatingToolbar: boolean;
   focusMode: boolean;
   focusModeBlur: boolean;

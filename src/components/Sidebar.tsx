@@ -28,6 +28,8 @@ interface SidebarProps {
   activeHeadingSlug: string;
   showHiddenFiles: boolean;
   showNonMarkdownFiles: boolean;
+  customWidth?: number;
+  onCustomWidthChange?: (width: number) => void;
   onTabChange: (tab: SidebarTab) => void;
   onSelectFile: (path: string) => void;
   onCreateFile: () => void;
@@ -52,6 +54,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeHeadingSlug,
   showHiddenFiles,
   showNonMarkdownFiles,
+  customWidth = 0,
+  onCustomWidthChange,
   onTabChange,
   onSelectFile,
   onCreateFile,
@@ -70,6 +74,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
+  const [autoWidthPx, setAutoWidthPx] = useState<number>(() =>
+    Math.round(Math.min(340, Math.max(276, window.innerWidth * 0.21)))
+  );
+  const [isResizing, setIsResizing] = useState<boolean>(false);
   const [sidebarContextMenu, setSidebarContextMenu] = useState<{
     x: number;
     y: number;
@@ -77,6 +85,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     targetName: string | null;
   } | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Automatically resize sidebar proportionally to screen width when window resizes
+  useEffect(() => {
+    const updateResponsiveWidth = () => {
+      const computed = Math.round(Math.min(350, Math.max(276, window.innerWidth * 0.21)));
+      setAutoWidthPx(computed);
+    };
+    window.addEventListener('resize', updateResponsiveWidth);
+    return () => window.removeEventListener('resize', updateResponsiveWidth);
+  }, []);
+
+  const effectiveWidth = customWidth >= 240 ? customWidth : autoWidthPx;
 
   useEffect(() => {
     if (!sidebarContextMenu) return;
@@ -171,6 +191,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onRenameFile(oldPath, trimmed);
     }
     setRenamingPath(null);
+  };
+
+  const handleStartResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(true);
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextW = Math.max(255, Math.min(480, moveEvent.clientX));
+      onCustomWidthChange?.(nextW);
+    };
+    const onUp = () => {
+      setIsResizing(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   };
 
   const renderTreeNode = (node: FileEntryNode, depth = 0): React.ReactNode => {
@@ -325,7 +362,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <>
       {isOpen && (
         <div
-          className="no-print no-export fixed inset-0 bg-black/25 backdrop-blur-[1px] z-30 md:hidden"
+          className="no-print no-export fixed inset-0 bg-black/25 backdrop-blur-[1px] z-20 md:hidden"
           onClick={onCloseMobileSidebar}
         />
       )}
@@ -333,84 +370,92 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <aside
         aria-label="Barre latérale d'organisation"
         style={{
-          width: isOpen ? '272px' : '0px',
+          width: isOpen ? `${effectiveWidth}px` : '0px',
           opacity: isOpen ? 1 : 0,
           backgroundColor: 'var(--sidebar-bg-color)',
           color: 'var(--sidebar-text-color)',
           borderColor: 'var(--border-color)',
         }}
-        className={`no-print no-export cursiv-sidebar-transition h-full border-r overflow-hidden flex flex-col shrink-0 select-none z-40 fixed md:static top-9 bottom-0 left-0 ${
+        className={`no-print no-export ${
+          isResizing ? '' : 'cursiv-sidebar-transition'
+        } h-full border-r overflow-hidden flex flex-col shrink-0 select-none z-30 fixed md:relative top-9 md:top-0 bottom-0 left-0 ${
           isOpen ? 'shadow-2xl md:shadow-none' : 'pointer-events-none md:pointer-events-auto'
         }`}
         onKeyDown={handleTreeKeyDown}
         tabIndex={0}
       >
-        <div className="w-[272px] h-full flex flex-col">
-          {/* Top Tab Switcher: File Tree | Articles | Outline */}
+        <div className="w-full min-w-[268px] h-full flex flex-col">
+          {/* Top Tab Switcher: File Tree | Articles | Outline + Action Icons (Never Clipped) */}
           <div
-            className="flex items-center justify-between px-3 py-2 border-b text-xs"
+            className="flex items-center justify-between gap-1 px-2.5 py-2 border-b text-xs shrink-0"
             style={{ borderColor: 'var(--border-color)' }}
           >
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5 min-w-0 flex-1">
               <button
                 type="button"
                 onClick={() => onTabChange('files')}
-                className={`flex items-center gap-1 px-2 py-1 rounded transition-colors cursor-pointer ${
-                  activeTab === 'files' ? 'font-semibold' : 'opacity-65 hover:opacity-100'
+                className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors cursor-pointer shrink-0 ${
+                  activeTab === 'files'
+                    ? 'font-semibold bg-black/5 dark:bg-white/5'
+                    : 'opacity-65 hover:opacity-100'
                 }`}
                 style={{
                   color: activeTab === 'files' ? 'var(--primary-color)' : 'inherit',
                 }}
-                title="Arborescence de fichiers (File Tree)"
+                title="Arborescence de fichiers"
               >
-                <Folder className="w-3.5 h-3.5" />
+                <Folder className="w-3.5 h-3.5 shrink-0" />
                 <span>Fichiers</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => onTabChange('articles')}
-                className={`flex items-center gap-1 px-2 py-1 rounded transition-colors cursor-pointer ${
-                  activeTab === 'articles' ? 'font-semibold' : 'opacity-65 hover:opacity-100'
+                className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors cursor-pointer shrink-0 ${
+                  activeTab === 'articles'
+                    ? 'font-semibold bg-black/5 dark:bg-white/5'
+                    : 'opacity-65 hover:opacity-100'
                 }`}
                 style={{
                   color: activeTab === 'articles' ? 'var(--primary-color)' : 'inherit',
                 }}
-                title="Liste des notes (Articles Panel)"
+                title="Liste des notes"
               >
-                <Newspaper className="w-3.5 h-3.5" />
+                <Newspaper className="w-3.5 h-3.5 shrink-0" />
                 <span>Articles</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => onTabChange('outline')}
-                className={`flex items-center gap-1 px-2 py-1 rounded transition-colors cursor-pointer ${
-                  activeTab === 'outline' ? 'font-semibold' : 'opacity-65 hover:opacity-100'
+                className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors cursor-pointer shrink-0 ${
+                  activeTab === 'outline'
+                    ? 'font-semibold bg-black/5 dark:bg-white/5'
+                    : 'opacity-65 hover:opacity-100'
                 }`}
                 style={{
                   color: activeTab === 'outline' ? 'var(--primary-color)' : 'inherit',
                 }}
-                title="Plan hiérarchique (Outline)"
+                title="Plan hiérarchique du document"
               >
-                <ListTree className="w-3.5 h-3.5" />
+                <ListTree className="w-3.5 h-3.5 shrink-0" />
                 <span>Plan</span>
               </button>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5 shrink-0">
               <button
                 type="button"
                 onClick={onCreateFile}
-                className="p-1 rounded hover:bg-black/10 transition-colors cursor-pointer"
-                title="Nouvelle note Markdown (Ctrl+N ou double-clic dans la liste)"
+                className="p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                title="Nouveau document Markdown (Ctrl+N ou double-clic)"
               >
                 <FilePlus className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
                 onClick={onOpenFolderDialog}
-                className="p-1 rounded hover:bg-black/10 transition-colors cursor-pointer"
+                className="p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
                 title="Ouvrir un dossier local (Ctrl+O)"
               >
                 <FolderOpen className="w-3.5 h-3.5" />
@@ -419,7 +464,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   type="button"
                   onClick={onCloseMobileSidebar}
-                  className="p-1 rounded hover:bg-black/10 md:hidden cursor-pointer"
+                  className="p-1.5 rounded hover:bg-black/10 md:hidden cursor-pointer"
                   title="Fermer le panneau"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -429,7 +474,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           {/* Search / Filter Input */}
-          <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="px-2.5 py-2 border-b shrink-0" style={{ borderColor: 'var(--border-color)' }}>
             <div
               className="flex items-center gap-2 px-2.5 py-1 rounded-md border text-xs"
               style={{
@@ -592,7 +637,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
           </div>
+
+          {/* Bottom Filter Toggles */}
+          {activeTab === 'files' && (
+            <div
+              className="px-3 py-2 border-t text-[11px] space-y-1 opacity-75 shrink-0"
+              style={{ borderColor: 'var(--border-color)' }}
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showHiddenFiles}
+                  onChange={onToggleHiddenFiles}
+                />
+                <span className="truncate">Afficher les fichiers cachés (.*)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showNonMarkdownFiles}
+                  onChange={onToggleNonMarkdownFiles}
+                />
+                <span className="truncate">Afficher les fichiers non-Markdown</span>
+              </label>
+            </div>
+          )}
         </div>
+
+        {/* Drag-Resize Handle on Right Edge (Double-click to reset to auto screen width) */}
+        <div
+          onMouseDown={handleStartResize}
+          onDoubleClick={() => onCustomWidthChange?.(0)}
+          title="Glisser pour redimensionner · Double-clic pour taille automatique"
+          className="hidden md:block absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+        />
 
         {/* Custom Right-Click Context Menu for Sidebar */}
         {sidebarContextMenu && (
@@ -604,7 +682,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               borderColor: 'var(--border-color)',
               color: 'var(--text-color)',
             }}
-            className="no-print no-export cursiv-popup-anim fixed z-50 w-52 rounded-xl border shadow-2xl backdrop-blur-md py-1.5 text-xs select-none"
+            className="no-print no-export cursiv-popup-anim fixed z-[100] w-52 rounded-xl border shadow-2xl backdrop-blur-md py-1.5 text-xs select-none"
             onMouseDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >

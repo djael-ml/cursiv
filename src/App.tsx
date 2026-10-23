@@ -47,6 +47,13 @@ const PREFERENCES_STORAGE_KEY = 'cursiv_preferences_v1_14';
 const DEFAULT_PREFERENCES: CursivPreferences = {
   theme: 'github',
   customThemesCss: {},
+  accentColor: '',
+  caretMotionBlur: true,
+  caretSmoothSpeed: 'normal',
+  smartTypography: true,
+  pageZoom: 100,
+  maxPageWidth: 820,
+  sidebarWidth: 0,
   showFloatingToolbar: false,
   focusMode: false,
   focusModeBlur: true,
@@ -131,10 +138,43 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Apply dynamic CSS theme & hot-reload custom CSS
+  // Apply dynamic CSS theme, discreet accent color & smooth caret speed
   useEffect(() => {
-    applyThemeCss(preferences.theme, preferences.customThemesCss);
-  }, [preferences.theme, preferences.customThemesCss]);
+    applyThemeCss(
+      preferences.theme,
+      preferences.customThemesCss,
+      preferences.accentColor,
+      preferences.caretSmoothSpeed
+    );
+  }, [
+    preferences.theme,
+    preferences.customThemesCss,
+    preferences.accentColor,
+    preferences.caretSmoothSpeed,
+  ]);
+
+  // Ctrl + Mouse Wheel Page Scale (scales only the document sheet, never the window or sidebar)
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 5 : -5;
+        setPreferences((prev) => {
+          const current = prev.pageZoom || 100;
+          const nextZoom = Math.max(50, Math.min(200, current + delta));
+          const next = { ...prev, pageZoom: nextZoom };
+          try {
+            localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(next));
+          } catch {
+            // ignore
+          }
+          return next;
+        });
+      }
+    };
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleWheel);
+  }, []);
 
   const refreshWorkspaceFiles = useCallback(async () => {
     try {
@@ -642,6 +682,8 @@ export const App: React.FC = () => {
           activeHeadingSlug={activeHeadingSlug}
           showHiddenFiles={preferences.showHiddenFiles}
           showNonMarkdownFiles={preferences.showNonMarkdownFiles}
+          customWidth={preferences.sidebarWidth}
+          onCustomWidthChange={(width) => updatePreferences({ sidebarWidth: width })}
           onTabChange={setSidebarTab}
           onSelectFile={handleSelectFile}
           onCreateFile={handleCreateNewFile}
@@ -705,9 +747,11 @@ export const App: React.FC = () => {
       <StatusBar
         markdownText={markdownString}
         readingSpeedWpm={preferences.readingSpeedWpm}
+        pageZoom={preferences.pageZoom}
         focusMode={preferences.focusMode}
         typewriterMode={preferences.typewriterMode}
         sourceCodeMode={preferences.sourceCodeMode}
+        onResetPageZoom={() => updatePreferences({ pageZoom: 100 })}
         onToggleFocusMode={() =>
           updatePreferences({ focusMode: !preferences.focusMode })
         }

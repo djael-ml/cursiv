@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.14.0",
   "type": "module",
-  "description": "Cursiv — Éditeur Markdown WYSIWYM Distraction-Free",
+  "description": "Cursiv — Éditeur Markdown WYSIWYM conçu par Djaël Mola",
+  "author": "Djaël Mola",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

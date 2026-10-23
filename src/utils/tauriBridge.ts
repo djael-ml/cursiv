@@ -33,7 +33,7 @@ const VIRTUAL_STORAGE_KEY = 'cursiv_virtual_fs_v1';
 
 export const DEFAULT_WELCOME_MARKDOWN = `---
 title: Bienvenue sur Cursiv 1.14
-author: Cursiv Studio
+author: Djaël Mola
 export_format: pdf
 ---
 

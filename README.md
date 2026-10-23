@@ -5,7 +5,7 @@
 
 > 📥 **Téléchargement direct Windows (10 / 11 / LTSC 64-bit)** : [**`Cursiv-Setup.exe`**](https://github.com/djael-ml/cursiv/releases/latest/download/Cursiv-Setup.exe) *(Installeur NSIS sans droits Administrateur requis, avec WebView2 auto-bootstrapper et mise à jour automatique intégrée).*
 
-**Cursiv.** est une application desktop de lecture et d'édition Markdown **WYSIWYM** (*What You See Is What You Mean*) 100% gratuite et open-source (licence MIT), conçue avec **Tauri v2 (Rust)**, **React 19**, **TypeScript**, **Tailwind CSS** et **CodeMirror 6**.
+**Cursiv.** est une application desktop de lecture et d'édition Markdown **WYSIWYM** (*What You See Is What You Mean*) 100% gratuite et open-source (licence MIT), conçue et développée par **Djaël Mola** avec **Tauri v2 (Rust)**, **React 19**, **TypeScript**, **Tailwind CSS** et **CodeMirror 6**.
 
 ---
 
@@ -65,6 +65,7 @@ npx tauri build --bundles nsis
 
 ---
 
-## 📄 Licence
+## 👤 Auteur & Licence
 
+Conçu et développé par **Djaël Mola**.  
 Distribué sous licence **MIT**. Voir le fichier [LICENSE](./LICENSE).

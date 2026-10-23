@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Download,
   Minus,
   PanelLeft,
+  RotateCcw,
   Settings,
   Square,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { BuiltInThemeId, CursivPreferences, LastExportConfig } from '../types/editor';
@@ -46,6 +49,25 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onCheckForUpdates,
 }) => {
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'themes' | 'help' | null>(null);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (menuContainerRef.current && !menuContainerRef.current.contains(e.target as Node)) {
+        setOpenMenu(null);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenu(null);
+    };
+    window.addEventListener('mousedown', handleOutsideClick);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      window.removeEventListener('mousedown', handleOutsideClick);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [openMenu]);
 
   const handleMinimize = async () => {
     if (isTauriEnvironment()) {
@@ -65,25 +87,27 @@ export const Titlebar: React.FC<TitlebarProps> = ({
     }
   };
 
+  const currentZoom = preferences.pageZoom || 100;
+
   return (
     <header
       data-tauri-drag-region
       style={{
         backgroundColor: 'var(--bg-color)',
         color: 'var(--text-color)',
+        borderColor: 'color-mix(in srgb, var(--border-color) 45%, transparent)',
       }}
-      className="no-print no-export h-9 px-3 flex items-center justify-between text-xs select-none relative z-40 transition-colors"
-      onMouseLeave={() => setOpenMenu(null)}
+      className="no-print no-export h-9 px-3 border-b flex items-center justify-between text-xs select-none relative z-[70] transition-colors shrink-0"
     >
-      {/* Left section: Sidebar Toggle + Brand Logo "Cursiv." + Subtle Menus */}
-      <div className="flex items-center gap-1">
+      {/* Left section: Sidebar Toggle + Brand Logo "Cursiv." + Top Menus */}
+      <div ref={menuContainerRef} className="flex items-center gap-1 relative z-[80]">
         <button
           type="button"
           onClick={onToggleSidebar}
           className={`p-1.5 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer ${
             sidebarOpen ? 'opacity-100' : 'opacity-60 hover:opacity-100'
           }`}
-          title="Afficher / Masquer la Sidebar (Ctrl+Shift+L)"
+          title="Afficher / Masquer le volet de navigation (Ctrl+Shift+L)"
         >
           <PanelLeft className="w-3.5 h-3.5" />
         </button>
@@ -100,13 +124,20 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           <button
             type="button"
             onClick={() => setOpenMenu(openMenu === 'file' ? null : 'file')}
-            className="px-2 py-1 rounded opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
+            onMouseEnter={() => {
+              if (openMenu && openMenu !== 'file') setOpenMenu('file');
+            }}
+            className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === 'file'
+                ? 'opacity-100 bg-black/6 dark:bg-white/10'
+                : 'opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
           >
             Fichier
           </button>
           {openMenu === 'file' && (
             <div
-              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-64 rounded-lg shadow-xl border py-1.5 z-50"
+              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-64 rounded-xl shadow-2xl border py-1.5 z-[120]"
               style={{
                 backgroundColor: 'var(--bg-color)',
                 borderColor: 'var(--border-color)',
@@ -229,7 +260,8 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-40 cursor-pointer"
               >
-                Export with Previous {lastExportConfig ? `(${lastExportConfig.format.toUpperCase()})` : ''}
+                Exporter avec le format précédent{' '}
+                {lastExportConfig ? `(${lastExportConfig.format.toUpperCase()})` : ''}
               </button>
               <button
                 type="button"
@@ -240,7 +272,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-40 cursor-pointer"
               >
-                Export and Overwrite with Previous
+                Exporter et écraser le fichier précédent
               </button>
 
               <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
@@ -253,7 +285,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2 cursor-pointer"
               >
                 <Settings className="w-3.5 h-3.5" />
-                <span>Préférences & Thèmes CSS...</span>
+                <span>Préférences & Personnalisation...</span>
               </button>
             </div>
           )}
@@ -264,13 +296,20 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           <button
             type="button"
             onClick={() => setOpenMenu(openMenu === 'view' ? null : 'view')}
-            className="px-2 py-1 rounded opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
+            onMouseEnter={() => {
+              if (openMenu && openMenu !== 'view') setOpenMenu('view');
+            }}
+            className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === 'view'
+                ? 'opacity-100 bg-black/6 dark:bg-white/10'
+                : 'opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
           >
             Affichage
           </button>
           {openMenu === 'view' && (
             <div
-              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-64 rounded-lg shadow-xl border py-1.5 z-50"
+              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-68 rounded-xl shadow-2xl border py-1.5 z-[120]"
               style={{
                 backgroundColor: 'var(--bg-color)',
                 borderColor: 'var(--border-color)',
@@ -286,7 +325,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
               >
-                <span>Barre d'outils flottante (1.14)</span>
+                <span>Barre d&apos;outils flottante</span>
                 <span>{preferences.showFloatingToolbar ? '✓' : ''}</span>
               </button>
               <button
@@ -328,6 +367,53 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                   {preferences.sourceCodeMode ? '✓ ' : ''}Ctrl+/
                 </span>
               </button>
+
+              <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
+              <div className="px-3 py-1 text-[10px] uppercase tracking-wider opacity-55 font-semibold flex justify-between">
+                <span>Échelle de la page (Ctrl + Molette)</span>
+                <span className="font-mono">{currentZoom}%</span>
+              </div>
+              <div className="px-3 py-1 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdatePreferences({
+                      pageZoom: Math.max(50, currentZoom - 10),
+                    })
+                  }
+                  className="flex-1 py-1 px-2 rounded border hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-center gap-1 cursor-pointer"
+                  style={{ borderColor: 'var(--border-color)' }}
+                  title="Réduire l'échelle de la page"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                  <span>-10%</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUpdatePreferences({ pageZoom: 100 })}
+                  className="py-1 px-2.5 rounded border hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-center gap-1 font-mono cursor-pointer"
+                  style={{ borderColor: 'var(--border-color)' }}
+                  title="Réinitialiser à 100%"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>100%</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdatePreferences({
+                      pageZoom: Math.min(200, currentZoom + 10),
+                    })
+                  }
+                  className="flex-1 py-1 px-2 rounded border hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-center gap-1 cursor-pointer"
+                  style={{ borderColor: 'var(--border-color)' }}
+                  title="Agrandir l'échelle de la page"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                  <span>+10%</span>
+                </button>
+              </div>
+
               <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
               <button
                 type="button"
@@ -351,13 +437,20 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           <button
             type="button"
             onClick={() => setOpenMenu(openMenu === 'themes' ? null : 'themes')}
-            className="px-2 py-1 rounded opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
+            onMouseEnter={() => {
+              if (openMenu && openMenu !== 'themes') setOpenMenu('themes');
+            }}
+            className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === 'themes'
+                ? 'opacity-100 bg-black/6 dark:bg-white/10'
+                : 'opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
           >
             Thèmes
           </button>
           {openMenu === 'themes' && (
             <div
-              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-56 rounded-lg shadow-xl border py-1.5 z-50"
+              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-56 rounded-xl shadow-2xl border py-1.5 z-[120]"
               style={{
                 backgroundColor: 'var(--bg-color)',
                 borderColor: 'var(--border-color)',
@@ -390,7 +483,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 text-xs opacity-75 cursor-pointer"
               >
-                Ouvrir le dossier themes/ (Hot-Reload)...
+                Personnaliser le CSS & Couleur d&apos;accent...
               </button>
             </div>
           )}
@@ -401,13 +494,20 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           <button
             type="button"
             onClick={() => setOpenMenu(openMenu === 'help' ? null : 'help')}
-            className="px-2 py-1 rounded opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
+            onMouseEnter={() => {
+              if (openMenu && openMenu !== 'help') setOpenMenu('help');
+            }}
+            className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === 'help'
+                ? 'opacity-100 bg-black/6 dark:bg-white/10'
+                : 'opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
           >
             Aide
           </button>
           {openMenu === 'help' && (
             <div
-              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-60 rounded-lg shadow-xl border py-1.5 z-50"
+              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-64 rounded-xl shadow-2xl border py-1.5 z-[120]"
               style={{
                 backgroundColor: 'var(--bg-color)',
                 borderColor: 'var(--border-color)',
@@ -431,26 +531,31 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
               >
-                Configuration Pandoc & Cloud...
+                Configuration Pandoc & Préférences...
               </button>
+              <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
+              <div className="px-3 py-1.5 text-[11px] opacity-75 leading-relaxed">
+                <div className="font-semibold">Cursiv. v1.14.0</div>
+                <div>Conçu et développé par <span className="font-semibold">Djaël Mola</span></div>
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Center: Ultra-Minimalist Document Title */}
+      {/* Center: Mathematically Centered Document Title ("Cursiv. — Nom du fichier en cours") */}
       <div
         data-tauri-drag-region
-        className="flex items-center gap-2 font-medium opacity-80 truncate max-w-md pointer-events-none"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center gap-2 font-medium opacity-85 truncate max-w-[42vw] pointer-events-none"
       >
-        <span className="cursiv-brand-logo text-sm opacity-90">
+        <span className="cursiv-brand-logo text-sm opacity-95 shrink-0">
           Cursiv<span style={{ color: 'var(--primary-color)' }}>.</span>
         </span>
-        <span className="opacity-35">—</span>
+        <span className="opacity-35 shrink-0">—</span>
         <span className="truncate">{currentFileName}</span>
         {isDirty && (
           <span
-            className="w-2 h-2 rounded-full inline-block"
+            className="w-2 h-2 rounded-full inline-block shrink-0"
             style={{ backgroundColor: 'var(--primary-color)' }}
             title="Modifications non enregistrées"
           />
@@ -458,12 +563,12 @@ export const Titlebar: React.FC<TitlebarProps> = ({
       </div>
 
       {/* Right: Window Controls */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 relative z-[80]">
         <button
           type="button"
           onClick={onOpenPreferencesModal}
           className="p-1.5 rounded opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
-          title="Préférences"
+          title="Préférences (Ctrl+,)"
         >
           <Settings className="w-3.5 h-3.5" />
         </button>

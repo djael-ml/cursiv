@@ -119,7 +119,6 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   onActiveHeadingSlugChange,
 }) => {
   const [cursorOffset, setCursorOffset] = useState<number | null>(null);
-  const [hasTextSelection, setHasTextSelection] = useState(false);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [lassoBox, setLassoBox] = useState<{
     startX: number;
@@ -729,28 +728,68 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         return;
       }
 
-      // Split paragraph into two on Enter at the end of line
-      if (selStart === currentText.length) {
-        e.preventDefault();
-        const newParaId = nextBlockId('p');
-        const idx = blocks.findIndex((b) => b.id === block.id);
-        const copy = [...blocks];
-        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: '' });
-        onChangeBlocks(copy);
-        onSelectBlock(newParaId, 0);
-        return;
-      }
+      // Split paragraph cleanly at the cursor position on Enter (Shift+Enter inserts soft line break)
+      e.preventDefault();
+      const beforeCursor = currentText.slice(0, selStart);
+      const afterCursor = currentText.slice(selEnd);
+      const newParaId = nextBlockId('p');
+      const idx = blocks.findIndex((b) => b.id === block.id);
+      const copy = [...blocks];
+      copy[idx] = { id: block.id, type: 'paragraph', text: beforeCursor };
+      copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterCursor });
+      onChangeBlocks(copy);
+      setCursorOffset(0);
+      onSelectBlock(newParaId, 0);
+      return;
     }
 
-    // Merge or delete empty paragraph on Backspace
-    if (e.key === 'Backspace' && currentText === '' && blocks.length > 1) {
+    // Backspace at the very beginning of a Heading converts it back to a normal Paragraph
+    if (e.key === 'Backspace' && selStart === 0 && selEnd === 0 && block.type === 'heading') {
       e.preventDefault();
+      updateSingleBlock(block.id, () => ({
+        id: block.id,
+        type: 'paragraph',
+        text: currentText,
+      }));
+      setCursorOffset(0);
+      onSelectBlock(block.id, 0);
+      return;
+    }
+
+    // Merge with previous block or delete empty paragraph on Backspace at position 0
+    if (e.key === 'Backspace' && selStart === 0 && selEnd === 0 && blocks.length > 1) {
       const idx = blocks.findIndex((b) => b.id === block.id);
-      const prevBlock = blocks[idx - 1];
-      const nextBlocks = blocks.filter((b) => b.id !== block.id);
-      onChangeBlocks(nextBlocks);
-      if (prevBlock) {
-        onSelectBlock(prevBlock.id, 9999);
+      if (idx > 0) {
+        const prevBlock = blocks[idx - 1];
+        if (prevBlock.type === 'paragraph' || prevBlock.type === 'heading') {
+          e.preventDefault();
+          const joinOffset = prevBlock.text.length;
+          const mergedText = prevBlock.text + currentText;
+          const copy = [...blocks];
+          copy[idx - 1] =
+            prevBlock.type === 'heading'
+              ? {
+                  ...prevBlock,
+                  text: mergedText,
+                  slug: slugifyHeading(mergedText || 'titre'),
+                }
+              : {
+                  ...prevBlock,
+                  text: mergedText,
+                };
+          copy.splice(idx, 1);
+          onChangeBlocks(copy);
+          setCursorOffset(joinOffset);
+          onSelectBlock(prevBlock.id, joinOffset);
+          return;
+        }
+        if (currentText === '') {
+          e.preventDefault();
+          const nextBlocks = blocks.filter((b) => b.id !== block.id);
+          onChangeBlocks(nextBlocks);
+          onSelectBlock(prevBlock.id, 9999);
+          return;
+        }
       }
     }
   };
@@ -1284,14 +1323,10 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           }
         }
       }}
-      onMouseUp={() => {
-        const sel = window.getSelection();
-        setHasTextSelection(Boolean(sel && sel.toString().trim().length > 0));
-      }}
     >
       {/* Cursiv Glassmorphism Floating Toolbar */}
       <FloatingToolbar
-        visible={preferences.showFloatingToolbar || hasTextSelection || selectedBlockIds.length > 0}
+        visible={preferences.showFloatingToolbar || selectedBlockIds.length > 1}
         onWrapInline={handleWrapInlineToolbar}
         onInsertBlock={handleInsertBlockToolbar}
       />
@@ -1366,6 +1401,10 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       {/* Centered Distraction-Free Document Sheet */}
       <div
         ref={sheetRef}
+        style={{
+          maxWidth: `${preferences.maxPageWidth || 820}px`,
+          zoom: (preferences.pageZoom || 100) / 100,
+        }}
         onClick={(e) => {
           // Clicking in the empty bottom margin of the document sheet focuses or creates a trailing paragraph
           if (e.target === e.currentTarget && selectedBlockIds.length === 0) {
@@ -1381,7 +1420,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
             }
           }
         }}
-        className={`cursiv-editor-sheet mx-auto max-w-[820px] px-5 sm:px-10 md:px-14 pt-8 sm:pt-12 pb-40 select-text ${
+        className={`cursiv-editor-sheet mx-auto px-5 sm:px-10 md:px-14 pt-8 sm:pt-12 pb-44 select-text ${
           preferences.focusMode ? 'cursiv-focus-mode' : ''
         } ${preferences.focusModeBlur ? 'cursiv-focus-blur' : ''} ${
           preferences.autoNumberHeadings ? 'auto-number-headings' : ''
@@ -1577,6 +1616,9 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                           value={block.text}
                           multiline={false}
                           autoFocus
+                          initialCaretOffset={cursorOffset}
+                          motionBlur={preferences.caretMotionBlur}
+                          smartTypography={preferences.smartTypography}
                           placeholder="Titre du document..."
                           onCursorChange={(caret) => setCursorOffset(caret)}
                           onChange={(val, caret) => {
@@ -1683,6 +1725,9 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       value={block.text}
                       multiline={true}
                       autoFocus
+                      initialCaretOffset={cursorOffset}
+                      motionBlur={preferences.caretMotionBlur}
+                      smartTypography={preferences.smartTypography}
                       placeholder="Rédigez ou tapez / pour les commandes (/title, /table, /code...)"
                       onCursorChange={(caret) => setCursorOffset(caret)}
                       onChange={(val, caret) => {
@@ -1841,6 +1886,27 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                                 }));
                               } else if (e.key === 'Enter') {
                                 e.preventDefault();
+                                // Pressing Enter on an empty list item exits the list into a new paragraph below
+                                if (item.text.trim() === '') {
+                                  const remainingItems = block.items.filter((_, i) => i !== itemIdx);
+                                  const newParaId = nextBlockId('p');
+                                  const bIdx = blocks.findIndex((b) => b.id === block.id);
+                                  const copy = [...blocks];
+                                  if (remainingItems.length === 0) {
+                                    copy[bIdx] = { id: newParaId, type: 'paragraph', text: '' };
+                                  } else {
+                                    copy[bIdx] = { ...block, items: remainingItems };
+                                    copy.splice(bIdx + 1, 0, {
+                                      id: newParaId,
+                                      type: 'paragraph',
+                                      text: '',
+                                    });
+                                  }
+                                  onChangeBlocks(copy);
+                                  setCursorOffset(0);
+                                  onSelectBlock(newParaId, 0);
+                                  return;
+                                }
                                 const nextItems = [...block.items];
                                 nextItems.splice(itemIdx + 1, 0, {
                                   id: nextBlockId('li'),
@@ -1854,15 +1920,25 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                                 }));
                               } else if (
                                 e.key === 'Backspace' &&
-                                item.text === '' &&
-                                block.items.length > 1
+                                item.text === ''
                               ) {
                                 e.preventDefault();
-                                const nextItems = block.items.filter((_, i) => i !== itemIdx);
-                                updateSingleBlock(block.id, () => ({
-                                  ...block,
-                                  items: nextItems,
-                                }));
+                                if (block.items.length > 1) {
+                                  const nextItems = block.items.filter((_, i) => i !== itemIdx);
+                                  updateSingleBlock(block.id, () => ({
+                                    ...block,
+                                    items: nextItems,
+                                  }));
+                                } else {
+                                  // Convert single empty list item back to a normal paragraph
+                                  updateSingleBlock(block.id, () => ({
+                                    id: block.id,
+                                    type: 'paragraph',
+                                    text: '',
+                                  }));
+                                  setCursorOffset(0);
+                                  onSelectBlock(block.id, 0);
+                                }
                               }
                             }}
                             className={`w-full bg-transparent outline-none ${
