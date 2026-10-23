@@ -290,3 +290,13 @@ html, body {
     break-inside: avoid;
   }
 }
+
+/* Find & Replace highlights (CSS Custom Highlight API) */
+::highlight(cursiv-find) {
+  background-color: color-mix(in srgb, var(--primary-color) 22%, transparent);
+}
+
+::highlight(cursiv-find-current) {
+  background-color: color-mix(in srgb, var(--primary-color) 55%, transparent);
+  color: var(--text-color);
+}

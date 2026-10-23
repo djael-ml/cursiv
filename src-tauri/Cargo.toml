@@ -1,6 +1,6 @@
 [package]
 name = "cursiv"
-version = "1.15.1"
+version = "1.16.0"
 description = "Cursiv — Éditeur Markdown WYSIWYM conçu par Djaël Mola"
 authors = ["Djaël Mola"]
 license = "MIT"

@@ -30,6 +30,12 @@ interface TitlebarProps {
   onUpdatePreferences: (patch: Partial<CursivPreferences>) => void;
   onOpenPreferencesModal: () => void;
   onCheckForUpdates: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  onFind?: () => void;
+  onReplace?: () => void;
+  onQuickSwitcher?: () => void;
+  onCommandPalette?: () => void;
 }
 
 export const Titlebar: React.FC<TitlebarProps> = ({
@@ -47,8 +53,14 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onUpdatePreferences,
   onOpenPreferencesModal,
   onCheckForUpdates,
+  onUndo,
+  onRedo,
+  onFind,
+  onReplace,
+  onQuickSwitcher,
+  onCommandPalette,
 }) => {
-  const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'themes' | 'help' | null>(null);
+  const [openMenu, setOpenMenu] = useState<'file' | 'edit' | 'view' | 'themes' | 'help' | null>(null);
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -286,6 +298,106 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               >
                 <Settings className="w-3.5 h-3.5" />
                 <span>Préférences & Personnalisation...</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Menu: Édition */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu(openMenu === 'edit' ? null : 'edit')}
+            onMouseEnter={() => {
+              if (openMenu && openMenu !== 'edit') setOpenMenu('edit');
+            }}
+            className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+              openMenu === 'edit'
+                ? 'opacity-100 bg-black/6 dark:bg-white/10'
+                : 'opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
+          >
+            Édition
+          </button>
+          {openMenu === 'edit' && (
+            <div
+              className="cursiv-popup-anim absolute left-0 top-full mt-1 w-64 rounded-xl shadow-2xl border py-1.5 z-[120]"
+              style={{
+                backgroundColor: 'var(--bg-color)',
+                borderColor: 'var(--border-color)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  onUndo?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Annuler</span>
+                <span className="opacity-50 font-mono">Ctrl+Z</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onRedo?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Rétablir</span>
+                <span className="opacity-50 font-mono">Ctrl+Y</span>
+              </button>
+
+              <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+              <button
+                type="button"
+                onClick={() => {
+                  onFind?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Rechercher</span>
+                <span className="opacity-50 font-mono">Ctrl+F</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onReplace?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Rechercher et remplacer</span>
+                <span className="opacity-50 font-mono">Ctrl+H</span>
+              </button>
+
+              <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+              <button
+                type="button"
+                onClick={() => {
+                  onQuickSwitcher?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Ouvrir un fichier...</span>
+                <span className="opacity-50 font-mono">Ctrl+E</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onCommandPalette?.();
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Palette de commandes</span>
+                <span className="opacity-50 font-mono">Ctrl+Maj+P</span>
               </button>
             </div>
           )}

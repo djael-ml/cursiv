@@ -14,3 +14,4 @@
   nsExec::Exec 'taskkill /F /IM Cursiv.exe'
   Sleep 600
 !macroend
+

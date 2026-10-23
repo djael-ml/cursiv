@@ -41,6 +41,13 @@ import { SourceCodeEditor } from './components/Editor/SourceCodeEditor';
 import { StatusBar } from './components/StatusBar';
 import { PreferencesModal } from './components/PreferencesModal';
 import { UpdateToast } from './components/UpdateToast';
+import { FindMatch, FindReplaceBar } from './components/FindReplaceBar';
+import { PaletteCommand, QuickSwitcher } from './components/QuickSwitcher';
+import { replaceAllInBlocks, replaceOccurrenceInBlocks } from './utils/findReplace';
+import { BUILTIN_THEMES } from './utils/themeManager';
+
+const HISTORY_LIMIT = 200;
+const HISTORY_COALESCE_MS = 800;
 
 const PREFERENCES_STORAGE_KEY = 'cursiv_preferences_v1_14';
 
@@ -122,9 +129,50 @@ export const App: React.FC = () => {
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [manualUpdateCheck, setManualUpdateCheck] = useState<boolean>(false);
 
+  // Find & Replace (Ctrl+F / Ctrl+H) and Quick Switcher / Command Palette (Ctrl+E / Ctrl+Shift+P)
+  const [findOpen, setFindOpen] = useState<boolean>(false);
+  const [findReplaceMode, setFindReplaceMode] = useState<boolean>(false);
+  const [findFocusSignal, setFindFocusSignal] = useState<number>(0);
+  const [switcherOpen, setSwitcherOpen] = useState<boolean>(false);
+  const [switcherInitialQuery, setSwitcherInitialQuery] = useState<string>('');
+
   const sheetRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+
+  // Document-wide Undo / Redo history (block snapshots, typing bursts coalesced)
+  const historyRef = useRef<{ past: MarkdownBlock[][]; future: MarkdownBlock[][] }>({
+    past: [],
+    future: [],
+  });
+  const prevBlocksRef = useRef<MarkdownBlock[]>(blocks);
+  const skipHistoryRef = useRef<boolean>(false);
+  const lastHistoryPushRef = useRef<number>(0);
+
+  const resetHistory = useCallback(() => {
+    historyRef.current = { past: [], future: [] };
+    skipHistoryRef.current = true;
+    lastHistoryPushRef.current = 0;
+  }, []);
+
+  useEffect(() => {
+    const prev = prevBlocksRef.current;
+    if (prev === blocks) return;
+    prevBlocksRef.current = blocks;
+    if (skipHistoryRef.current) {
+      skipHistoryRef.current = false;
+      return;
+    }
+    const now = Date.now();
+    const structural = prev.length !== blocks.length;
+    const h = historyRef.current;
+    if (structural || now - lastHistoryPushRef.current > HISTORY_COALESCE_MS) {
+      h.past.push(prev);
+      if (h.past.length > HISTORY_LIMIT) h.past.shift();
+    }
+    h.future = [];
+    lastHistoryPushRef.current = now;
+  }, [blocks]);
 
   const updatePreferences = useCallback((patch: Partial<CursivPreferences>) => {
     setPreferences((prev) => {
@@ -218,6 +266,7 @@ export const App: React.FC = () => {
     try {
       const content = await readTextFile(path);
       const parsed = parseMarkdownToBlocks(content);
+      resetHistory();
       setCurrentFilePath(path);
       setBlocks(parsed);
       setActiveBlockId(parsed[0]?.id || null);
@@ -225,13 +274,53 @@ export const App: React.FC = () => {
     } catch (err) {
       setStatusBanner(`Erreur lecture : ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, []);
+  }, [resetHistory]);
+
+  const handleOpenWikiLinkOrFile = useCallback(
+    (target: string) => {
+      const cleanTarget = target.trim().replace(/^\[\[/, '').replace(/\]\]$/, '');
+      const targetLower = cleanTarget.toLowerCase();
+      const targetWithExt = targetLower.endsWith('.md') ? targetLower : `${targetLower}.md`;
+
+      const findPath = (nodes: FileEntryNode[]): string | null => {
+        for (const node of nodes) {
+          if (!node.is_dir) {
+            const nodeName = node.name.toLowerCase();
+            const nodePath = node.path.toLowerCase().replace(/\\/g, '/');
+            const cleanPath = targetLower.replace(/\\/g, '/');
+            if (
+              nodeName === targetLower ||
+              nodeName === targetWithExt ||
+              nodePath === cleanPath ||
+              nodePath.endsWith('/' + targetWithExt)
+            ) {
+              return node.path;
+            }
+          }
+          if (node.children) {
+            const found = findPath(node.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      const match = findPath(files);
+      if (match) {
+        handleSelectFile(match);
+      } else {
+        setStatusBanner(`Note introuvable : "${cleanTarget}"`);
+      }
+    },
+    [files, handleSelectFile]
+  );
 
   // Load saved content of initial welcome file on startup so user edits are preserved
   useEffect(() => {
     readTextFile(currentFilePath)
       .then((content) => {
         if (content && content.trim().length > 0) {
+          resetHistory();
           setBlocks(parseMarkdownToBlocks(content));
         }
       })
@@ -468,6 +557,127 @@ export const App: React.FC = () => {
     [currentFilePath, blocks, preferences]
   );
 
+  const applyHistorySnapshot = useCallback(
+    (snapshot: MarkdownBlock[]) => {
+      skipHistoryRef.current = true;
+      lastHistoryPushRef.current = 0;
+      setBlocks(snapshot);
+      setActiveBlockId((id) => (id && snapshot.some((b) => b.id === id) ? id : null));
+      setIsDirty(true);
+      scheduleAutosave(currentFilePath, snapshot);
+    },
+    [currentFilePath, scheduleAutosave]
+  );
+
+  const handleUndo = useCallback(() => {
+    const h = historyRef.current;
+    const previous = h.past.pop();
+    if (!previous) return;
+    h.future.push(prevBlocksRef.current);
+    applyHistorySnapshot(previous);
+  }, [applyHistorySnapshot]);
+
+  const handleRedo = useCallback(() => {
+    const h = historyRef.current;
+    const nextSnap = h.future.pop();
+    if (!nextSnap) return;
+    h.past.push(prevBlocksRef.current);
+    applyHistorySnapshot(nextSnap);
+  }, [applyHistorySnapshot]);
+
+  const openFind = useCallback(
+    (withReplace: boolean) => {
+      if (preferences.sourceCodeMode) return;
+      // Leave edit mode so every block is rendered (and therefore searchable / highlightable)
+      setActiveBlockId(null);
+      setFindOpen(true);
+      if (withReplace) setFindReplaceMode(true);
+      setFindFocusSignal((n) => n + 1);
+    },
+    [preferences.sourceCodeMode]
+  );
+
+  const handleReplaceOne = useCallback(
+    (match: FindMatch, query: string, replacement: string, caseSensitive: boolean) => {
+      const res = replaceOccurrenceInBlocks(
+        blocks,
+        match.blockId,
+        match.indexInBlock,
+        query,
+        replacement,
+        caseSensitive
+      );
+      if (res.replaced === 0) return;
+      setBlocks(res.blocks);
+      setIsDirty(true);
+      scheduleAutosave(currentFilePath, res.blocks);
+    },
+    [blocks, currentFilePath, scheduleAutosave]
+  );
+
+  const handleReplaceAll = useCallback(
+    (query: string, replacement: string, caseSensitive: boolean): number => {
+      const res = replaceAllInBlocks(blocks, query, replacement, caseSensitive);
+      if (res.replaced > 0) {
+        setBlocks(res.blocks);
+        setIsDirty(true);
+        scheduleAutosave(currentFilePath, res.blocks);
+      }
+      return res.replaced;
+    },
+    [blocks, currentFilePath, scheduleAutosave]
+  );
+
+  // Capture-phase shortcuts: Undo/Redo, Find/Replace, Quick Switcher & Command Palette
+  useEffect(() => {
+    const onKeyDownCapture = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const inCodeMirror = !!target?.closest?.('.cm-editor');
+      const inSheet = !!target?.closest?.('.cursiv-editor-sheet');
+      const isFieldOutsideSheet =
+        !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && !inSheet;
+
+      // Undo / Redo — CodeMirror blocks and side inputs keep their own native history
+      if ((key === 'z' || key === 'y') && !preferences.sourceCodeMode && !inCodeMirror && !isFieldOutsideSheet) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (key === 'y' || (key === 'z' && e.shiftKey)) handleRedo();
+        else handleUndo();
+        return;
+      }
+
+      if (key === 'f' && !e.shiftKey && !inCodeMirror) {
+        e.preventDefault();
+        e.stopPropagation();
+        openFind(false);
+        return;
+      }
+      if (key === 'h' && !e.shiftKey && !inCodeMirror) {
+        e.preventDefault();
+        e.stopPropagation();
+        openFind(true);
+        return;
+      }
+      if (key === 'e' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSwitcherInitialQuery('');
+        setSwitcherOpen(true);
+        return;
+      }
+      if (key === 'p' && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSwitcherInitialQuery('>');
+        setSwitcherOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDownCapture, true);
+    return () => window.removeEventListener('keydown', onKeyDownCapture, true);
+  }, [handleUndo, handleRedo, openFind, preferences.sourceCodeMode]);
+
   // Global Windows Keyboard Shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+D, Ctrl+P, Ctrl+, , F2, F8, F9, Ctrl+1..6, Ctrl+0, Ctrl+T, Ctrl+/, Ctrl+Shift+L)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -620,6 +830,58 @@ export const App: React.FC = () => {
 
   const currentFileName = currentFilePath.split('/').pop() || 'Sans titre.md';
 
+  const paletteCommands: PaletteCommand[] = switcherOpen
+    ? [
+        { id: 'new', label: 'Nouveau document', shortcut: 'Ctrl+N', run: handleCreateNewFile },
+        { id: 'save', label: 'Enregistrer', shortcut: 'Ctrl+S', run: handleSaveCurrentFile },
+        { id: 'open-folder', label: 'Ouvrir un dossier…', shortcut: 'Ctrl+O', run: handleOpenFolderDialog },
+        { id: 'duplicate', label: 'Dupliquer le document', shortcut: 'Ctrl+D', run: () => handleDuplicateFile(currentFilePath) },
+        {
+          id: 'rename',
+          label: 'Renommer le document',
+          shortcut: 'F2',
+          run: () => {
+            setSidebarOpen(true);
+            setSidebarTab('files');
+            setAutoRenameFilePath(currentFilePath);
+          },
+        },
+        { id: 'find', label: 'Rechercher dans le document', shortcut: 'Ctrl+F', run: () => openFind(false) },
+        { id: 'replace', label: 'Rechercher et remplacer', shortcut: 'Ctrl+H', run: () => openFind(true) },
+        { id: 'undo', label: 'Annuler', shortcut: 'Ctrl+Z', run: handleUndo },
+        { id: 'redo', label: 'Rétablir', shortcut: 'Ctrl+Y', run: handleRedo },
+        { id: 'exp-pdf', label: 'Exporter en PDF', shortcut: 'Ctrl+P', run: () => handleExportDocument('pdf') },
+        { id: 'exp-html', label: 'Exporter en HTML (avec style)', run: () => handleExportDocument('html') },
+        { id: 'exp-html-plain', label: 'Exporter en HTML (sans style)', run: () => handleExportDocument('html-plain') },
+        { id: 'exp-png', label: 'Exporter en image PNG', run: () => handleExportDocument('png') },
+        { id: 'exp-docx', label: 'Exporter en Word (.docx) via Pandoc', run: () => handleExportDocument('docx') },
+        { id: 'exp-odt', label: 'Exporter en OpenDocument (.odt) via Pandoc', run: () => handleExportDocument('odt') },
+        { id: 'exp-latex', label: 'Exporter en LaTeX (.tex) via Pandoc', run: () => handleExportDocument('latex') },
+        { id: 'exp-epub', label: 'Exporter en EPUB via Pandoc', run: () => handleExportDocument('epub') },
+        { id: 'import', label: 'Importer un document via Pandoc…', run: handleImportPandocFile },
+        { id: 'focus', label: 'Basculer le mode Focus', shortcut: 'F8', run: () => updatePreferences({ focusMode: !preferences.focusMode }) },
+        { id: 'typewriter', label: 'Basculer le mode Machine à écrire', shortcut: 'F9', run: () => updatePreferences({ typewriterMode: !preferences.typewriterMode }) },
+        { id: 'source', label: 'Basculer le mode Code source', shortcut: 'Ctrl+/', run: handleToggleSourceMode },
+        { id: 'sidebar', label: 'Afficher / masquer le volet de navigation', shortcut: 'Ctrl+Maj+L', run: () => setSidebarOpen((v) => !v) },
+        { id: 'outline', label: 'Afficher le plan du document', run: () => { setSidebarOpen(true); setSidebarTab('outline'); } },
+        { id: 'zoom-reset', label: 'Réinitialiser l’échelle de la page (100 %)', run: () => updatePreferences({ pageZoom: 100 }) },
+        { id: 'prefs', label: 'Préférences', shortcut: 'Ctrl+,', run: () => setPreferencesModalOpen(true) },
+        {
+          id: 'updates',
+          label: 'Vérifier les mises à jour',
+          run: () => {
+            setManualUpdateCheck(true);
+            checkGitHubUpdates(preferences.githubUpdateRepo).then(setUpdateInfo);
+          },
+        },
+        ...Object.values(BUILTIN_THEMES).map((t) => ({
+          id: `theme-${t.id}`,
+          label: `Thème : ${t.name}${preferences.theme === t.id ? '  (actif)' : ''}`,
+          run: () => updatePreferences({ theme: t.id as CursivPreferences['theme'] }),
+        })),
+      ]
+    : [];
+
   return (
     <div
       className="h-screen w-screen flex flex-col overflow-hidden"
@@ -646,6 +908,18 @@ export const App: React.FC = () => {
         onCheckForUpdates={() => {
           setManualUpdateCheck(true);
           checkGitHubUpdates(preferences.githubUpdateRepo).then(setUpdateInfo);
+        }}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onFind={() => openFind(false)}
+        onReplace={() => openFind(true)}
+        onQuickSwitcher={() => {
+          setSwitcherInitialQuery('');
+          setSwitcherOpen(true);
+        }}
+        onCommandPalette={() => {
+          setSwitcherInitialQuery('>');
+          setSwitcherOpen(true);
         }}
       />
 
@@ -738,6 +1012,7 @@ export const App: React.FC = () => {
               }}
               onSelectBlock={(blockId) => setActiveBlockId(blockId)}
               onActiveHeadingSlugChange={setActiveHeadingSlug}
+              onOpenFile={handleOpenWikiLinkOrFile}
             />
           )}
         </main>
@@ -759,6 +1034,36 @@ export const App: React.FC = () => {
           updatePreferences({ typewriterMode: !preferences.typewriterMode })
         }
         onToggleSourceCodeMode={handleToggleSourceMode}
+      />
+
+      {/* Find & Replace bar (Ctrl+F / Ctrl+H) */}
+      {!preferences.sourceCodeMode && (
+        <FindReplaceBar
+          isOpen={findOpen}
+          replaceMode={findReplaceMode}
+          focusSignal={findFocusSignal}
+          sheetRef={sheetRef}
+          contentVersion={blocks}
+          onToggleReplaceMode={() => setFindReplaceMode((v) => !v)}
+          onReplaceOne={handleReplaceOne}
+          onReplaceAll={handleReplaceAll}
+          onClose={() => {
+            setFindOpen(false);
+            setFindReplaceMode(false);
+          }}
+        />
+      )}
+
+      {/* Quick Switcher (Ctrl+E) & Command Palette (Ctrl+Shift+P) */}
+      <QuickSwitcher
+        isOpen={switcherOpen}
+        initialQuery={switcherInitialQuery}
+        files={files}
+        workspaceRoot={workspaceRoot}
+        currentFilePath={currentFilePath}
+        commands={paletteCommands}
+        onOpenFile={handleSelectFile}
+        onClose={() => setSwitcherOpen(false)}
       />
 
       {/* Preferences & Hot-Reload CSS Themes Modal */}

@@ -3,6 +3,8 @@ import {
   AlertOctagon,
   AlertTriangle,
   CheckSquare,
+  ChevronDown,
+  ChevronRight,
   Flame,
   GripVertical,
   Info,
@@ -52,6 +54,7 @@ interface WysiwymEditorProps {
   onChangeBlocks: (nextBlocks: MarkdownBlock[]) => void;
   onSelectBlock: (blockId: string | null, cursorOffset?: number) => void;
   onActiveHeadingSlugChange?: (slug: string) => void;
+  onOpenFile?: (pathOrName: string) => void;
 }
 
 const CALLOUT_STYLES: Record<
@@ -117,9 +120,14 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   onChangeBlocks,
   onSelectBlock,
   onActiveHeadingSlugChange,
+  onOpenFile,
 }) => {
   const [cursorOffset, setCursorOffset] = useState<number | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+  const [collapsedHeadings, setCollapsedHeadings] = useState<Set<string>>(new Set());
+  const [draggedBlockId, setDraggedBlockId] = useState<string | null>(null);
+  const [dragOverBlockId, setDragOverBlockId] = useState<string | null>(null);
+  const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after'>('after');
   const [lassoBox, setLassoBox] = useState<{
     startX: number;
     startY: number;
@@ -743,9 +751,19 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       return;
     }
 
-    // Backspace at the very beginning of a Heading converts it back to a normal Paragraph
+    // Backspace at the very beginning of a Heading progressively demotes it (H3 -> H2 -> H1 -> Paragraph)
     if (e.key === 'Backspace' && selStart === 0 && selEnd === 0 && block.type === 'heading') {
       e.preventDefault();
+      if (block.level > 1) {
+        const nextLevel = (block.level - 1) as 1 | 2 | 3 | 4 | 5 | 6;
+        updateSingleBlock(block.id, () => ({
+          ...block,
+          level: nextLevel,
+        }));
+        setCursorOffset(0);
+        onSelectBlock(block.id, 0);
+        return;
+      }
       updateSingleBlock(block.id, () => ({
         id: block.id,
         type: 'paragraph',
@@ -862,6 +880,10 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       mathMatch ||
       tocMatch
     ) {
+      // Instant transformation if user typed the trailing space trigger, debounced (350ms) otherwise
+      const hasSpaceTrigger = /^(#{1,6}|[-*+]|>\s*|\d+\.)\s/.test(textValue);
+      const delay = hasSpaceTrigger ? 0 : 350;
+
       markdownTransformTimerRef.current = window.setTimeout(() => {
         const currentBlocks = blocksRef.current;
         const idx = currentBlocks.findIndex((b) => b.id === blockId);
@@ -946,7 +968,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           onChangeBlocksRef.current(copy);
           onSelectBlockRef.current(blockId);
         }
-      }, 420);
+      }, delay);
     }
   };
 
@@ -1103,6 +1125,15 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         onSelectBlock(targetHeading.blockId);
       }
+      return;
+    }
+    if (/^https?:\/\//i.test(slugOrUrl)) {
+      window.open(slugOrUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    // WikiLink internal note navigation (e.g. [[Architecture]] or [[Note.md]])
+    if (onOpenFile) {
+      onOpenFile(slugOrUrl);
       return;
     }
     window.open(slugOrUrl, '_blank', 'noopener,noreferrer');
@@ -1446,52 +1477,132 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           preferences.autoNumberHeadings ? 'auto-number-headings' : ''
         }`}
       >
-        {blocks.map((block) => {
-          const isActive = activeBlockId === block.id;
-          const isLassoSelected = selectedBlockIds.includes(block.id);
+        {(() => {
+          // Compute blocks hidden under collapsed parent headings (H1..H6)
+          const hiddenBlockIds = new Set<string>();
+          if (collapsedHeadings.size > 0) {
+            let activeCollapseLevel: number | null = null;
+            for (const b of blocks) {
+              if (b.type === 'heading') {
+                if (activeCollapseLevel !== null && b.level <= activeCollapseLevel) {
+                  activeCollapseLevel = null;
+                }
+                if (collapsedHeadings.has(b.id)) {
+                  activeCollapseLevel = b.level;
+                } else if (activeCollapseLevel !== null) {
+                  hiddenBlockIds.add(b.id);
+                }
+              } else if (activeCollapseLevel !== null) {
+                hiddenBlockIds.add(b.id);
+              }
+            }
+          }
 
-          return (
-            <div
-              key={block.id}
-              data-block-id={block.id}
-              ref={(el) => {
-                blockDomRefs.current[block.id] = el;
-              }}
-              className={`cursiv-block group/block relative ${
-                isActive ? 'cursiv-block-active' : ''
-              } ${isLassoSelected ? 'cursiv-block-selected' : ''}`}
-            >
-              {/* Notion-style Left Margin Block Handle (Click to select block, Right-click for menu) */}
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectBlock(null);
-                  setSelectedBlockIds((prev) =>
-                    e.shiftKey
-                      ? prev.includes(block.id)
-                        ? prev.filter((id) => id !== block.id)
-                        : [...prev, block.id]
-                      : [block.id]
-                  );
+          return blocks.map((block) => {
+            if (hiddenBlockIds.has(block.id)) return null;
+
+            const isActive = activeBlockId === block.id;
+            const isLassoSelected = selectedBlockIds.includes(block.id);
+            const isDragTarget = dragOverBlockId === block.id && draggedBlockId !== block.id;
+            const dragIndicatorClass = isDragTarget
+              ? dragOverPosition === 'before'
+                ? 'border-t-2 border-[var(--primary-color)]'
+                : 'border-b-2 border-[var(--primary-color)]'
+              : '';
+
+            return (
+              <div
+                key={block.id}
+                data-block-id={block.id}
+                ref={(el) => {
+                  blockDomRefs.current[block.id] = el;
                 }}
-                onContextMenu={(e) => {
+                onDragOver={(e) => {
+                  if (!draggedBlockId || draggedBlockId === block.id) return;
                   e.preventDefault();
-                  e.stopPropagation();
-                  setSelectedBlockIds([block.id]);
-                  setContextMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    targetBlockId: block.id,
-                    selectedBlockCount: 1,
-                  });
+                  e.dataTransfer.dropEffect = 'move';
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const midY = rect.top + rect.height / 2;
+                  const pos = e.clientY < midY ? 'before' : 'after';
+                  if (dragOverBlockId !== block.id || dragOverPosition !== pos) {
+                    setDragOverBlockId(block.id);
+                    setDragOverPosition(pos);
+                  }
                 }}
-                title="Cliquer pour sélectionner le bloc · Clic droit pour les options"
-                className="no-print no-export opacity-0 group-hover/block:opacity-45 hover:!opacity-100 absolute -left-7 top-1.5 p-0.5 rounded hover:bg-black/6 dark:hover:bg-white/10 transition-opacity cursor-grab active:cursor-grabbing hidden sm:flex items-center justify-center"
+                onDragLeave={(e) => {
+                  if (e.currentTarget === e.target) {
+                    setDragOverBlockId((cur) => (cur === block.id ? null : cur));
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const sourceId = e.dataTransfer.getData('text/plain') || draggedBlockId;
+                  if (!sourceId || sourceId === block.id) {
+                    setDraggedBlockId(null);
+                    setDragOverBlockId(null);
+                    return;
+                  }
+                  const fromIdx = blocks.findIndex((b) => b.id === sourceId);
+                  let toIdx = blocks.findIndex((b) => b.id === block.id);
+                  if (fromIdx === -1 || toIdx === -1) return;
+
+                  if (dragOverPosition === 'after') {
+                    toIdx = toIdx + 1;
+                  }
+                  const copy = [...blocks];
+                  const [moved] = copy.splice(fromIdx, 1);
+                  const targetPos = fromIdx < toIdx ? toIdx - 1 : toIdx;
+                  copy.splice(targetPos, 0, moved);
+
+                  onChangeBlocks(copy);
+                  setDraggedBlockId(null);
+                  setDragOverBlockId(null);
+                }}
+                className={`cursiv-block group/block relative transition-all duration-75 ${dragIndicatorClass} ${
+                  isActive ? 'cursiv-block-active' : ''
+                } ${isLassoSelected ? 'cursiv-block-selected' : ''}`}
               >
-                <GripVertical className="w-3.5 h-3.5" />
-              </button>
+                {/* Notion-style Left Margin Block Handle (Draggable to reorder, Click to select, Right-click for menu) */}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  draggable={true}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData('text/plain', block.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                    setDraggedBlockId(block.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedBlockId(null);
+                    setDragOverBlockId(null);
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectBlock(null);
+                    setSelectedBlockIds((prev) =>
+                      e.shiftKey
+                        ? prev.includes(block.id)
+                          ? prev.filter((id) => id !== block.id)
+                          : [...prev, block.id]
+                        : [block.id]
+                    );
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSelectedBlockIds([block.id]);
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      targetBlockId: block.id,
+                      selectedBlockCount: 1,
+                    });
+                  }}
+                  title="Glisser pour réorganiser · Cliquer pour sélectionner · Clic droit pour les options"
+                  className="no-print no-export opacity-0 group-hover/block:opacity-45 hover:!opacity-100 absolute -left-7 top-1.5 p-0.5 rounded hover:bg-black/6 dark:hover:bg-white/10 transition-opacity cursor-grab active:cursor-grabbing hidden sm:flex items-center justify-center"
+                >
+                  <GripVertical className="w-3.5 h-3.5" />
+                </button>
               {/* Slash Command Menu (`/title`, `/h1`, `/table`, `/code`, `/math`, etc.) */}
               {slashPopup && slashPopup.blockId === block.id && (
                 <SlashCommandMenu
@@ -1613,6 +1724,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                     6: 'text-sm font-semibold uppercase tracking-wide mt-4 mb-1.5 opacity-80',
                   };
 
+                  const isFolded = collapsedHeadings.has(block.id);
+
                   return (
                     <Tag
                       id={block.slug}
@@ -1621,9 +1734,34 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                         borderColor:
                           block.level <= 2 ? 'var(--border-color)' : 'transparent',
                       }}
-                      className={`${sizeClasses[block.level]} flex items-baseline gap-1.5 cursor-text`}
+                      className={`${sizeClasses[block.level]} flex items-baseline gap-1.5 cursor-text group/heading relative`}
                       onClick={() => onSelectBlock(block.id, block.text.length)}
                     >
+                      <button
+                        type="button"
+                        contentEditable={false}
+                        tabIndex={-1}
+                        title={isFolded ? 'Déplier la section' : 'Replier la section'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCollapsedHeadings((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(block.id)) {
+                              next.delete(block.id);
+                            } else {
+                              next.add(block.id);
+                            }
+                            return next;
+                          });
+                        }}
+                        className={`inline-flex items-center justify-center p-0.5 rounded transition-opacity cursor-pointer text-[var(--text-color)] select-none mr-0.5 ${
+                          isFolded
+                            ? 'opacity-100 text-[var(--primary-color)]'
+                            : 'opacity-0 group-hover/heading:opacity-60 hover:!opacity-100'
+                        }`}
+                      >
+                        {isFolded ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                      </button>
                       <span
                         className={`md-token-marker ${
                           isActive ? 'md-token-marker-visible' : 'md-token-marker-hidden'
@@ -1663,7 +1801,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                           className="flex-1"
                         />
                       ) : (
-                        <span className="heading-content">
+                        <span className="heading-content flex items-baseline gap-2">
                           <LiveInlineTokens
                             text={block.text}
                             isBlockActive={false}
@@ -1673,6 +1811,22 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                             pandocMathRules={preferences.inlineMathPandocRules}
                             onNavigateAnchor={navigateAnchorOrUrl}
                           />
+                          {isFolded && (
+                            <span
+                              contentEditable={false}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setCollapsedHeadings((prev) => {
+                                  const next = new Set(prev);
+                                  next.delete(block.id);
+                                  return next;
+                                });
+                              }}
+                              className="text-xs font-normal px-2 py-0.5 rounded-full bg-[var(--hover-bg-color)] border border-[var(--border-color)] text-[var(--primary-color)] cursor-pointer select-none"
+                            >
+                              ··· section repliée
+                            </span>
+                          )}
                         </span>
                       )}
                     </Tag>
@@ -2224,7 +2378,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
               )}
             </div>
           );
-        })}
+        });
+      })()}
       </div>
     </div>
   );

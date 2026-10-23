@@ -13,6 +13,14 @@ export type InlineSegment =
   | { type: 'sub'; raw: string; marker: string; content: string; start: number; end: number }
   | { type: 'sup'; raw: string; marker: string; content: string; start: number; end: number }
   | {
+      type: 'wikilink';
+      raw: string;
+      target: string;
+      label: string;
+      start: number;
+      end: number;
+    }
+  | {
       type: 'link';
       raw: string;
       text: string;
@@ -60,9 +68,9 @@ export function tokenizeInlineMarkdown(
   pandocMathRules = true
 ): InlineSegment[] {
   const segments: InlineSegment[] = [];
-  // Combined regex for inline Markdown tokens
+  // Combined regex for inline Markdown tokens (including WikiLinks [[Note]] or [[Note|Titre]])
   const tokenRegex =
-    /(<!--[\s\S]*?-->)|(!\[[^\]]*\]\([^)]+\))|(\[\^[^\]]+\])|(\[[^\]]+\]\([^)]+\))|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(~~[^~]+~~)|(==[^=]+==)|(`[^`]+`)|(\$[^$\n]+\$)|(~[^~\s]+~)|(\^[^^\s]+\^)|(:[a-zA-Z0-9_+-]+:)/g;
+    /(<!--[\s\S]*?-->)|(!\[[^\]]*\]\([^)]+\))|(\[\^[^\]]+\])|(\[\[[^\]]+\]\])|(\[[^\]]+\]\([^)]+\))|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(~~[^~]+~~)|(==[^=]+==)|(`[^`]+`)|(\$[^$\n]+\$)|(~[^~\s]+~)|(\^[^^\s]+\^)|(:[a-zA-Z0-9_+-]+:)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -113,6 +121,20 @@ export function tokenizeInlineMarkdown(
         end,
       });
     } else if (match[4]) {
+      // WikiLink [[Note]] or [[Note|Titre]]
+      const inner = raw.slice(2, -2);
+      const pipeIdx = inner.indexOf('|');
+      const target = (pipeIdx === -1 ? inner : inner.slice(0, pipeIdx)).trim();
+      const label = (pipeIdx === -1 ? inner : inner.slice(pipeIdx + 1)).trim();
+      segments.push({
+        type: 'wikilink',
+        raw,
+        target,
+        label: label || target,
+        start,
+        end,
+      });
+    } else if (match[5]) {
       // Link [text](href)
       const m = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       segments.push({
@@ -123,7 +145,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[5]) {
+    } else if (match[6]) {
       // Bold **...** or __...__
       const marker = raw.slice(0, 2);
       segments.push({
@@ -134,7 +156,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[6]) {
+    } else if (match[7]) {
       // Italic *...* or _..._
       const marker = raw.slice(0, 1);
       segments.push({
@@ -145,7 +167,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[7]) {
+    } else if (match[8]) {
       // Strikethrough ~~...~~
       segments.push({
         type: 'strike',
@@ -155,7 +177,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[8]) {
+    } else if (match[9]) {
       // Highlight ==...==
       segments.push({
         type: 'highlight',
@@ -165,7 +187,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[9]) {
+    } else if (match[10]) {
       // Inline code `...`
       segments.push({
         type: 'code',
@@ -175,7 +197,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[10]) {
+    } else if (match[11]) {
       // Inline Math $...$
       const inner = raw.slice(1, -1);
       // Pandoc rule: opening $ must not be followed by space, closing $ must not be preceded by space
@@ -198,7 +220,7 @@ export function tokenizeInlineMarkdown(
           end,
         });
       }
-    } else if (match[11]) {
+    } else if (match[12]) {
       // Subscript ~...~
       segments.push({
         type: 'sub',
@@ -208,7 +230,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[12]) {
+    } else if (match[13]) {
       // Superscript ^...^
       segments.push({
         type: 'sup',
@@ -218,7 +240,7 @@ export function tokenizeInlineMarkdown(
         start,
         end,
       });
-    } else if (match[13]) {
+    } else if (match[14]) {
       // Emoji :shortcode:
       const code = raw.slice(1, -1);
       const found = EMOJI_DICTIONARY.find((e) => e.shortcode === code);
@@ -488,6 +510,34 @@ export const LiveInlineTokens: React.FC<LiveInlineTokensProps> = ({
               </span>
             );
           }
+
+          case 'wikilink':
+            return (
+              <span
+                key={idx}
+                className="inline-flex items-baseline"
+                onMouseEnter={() => setHoveredTokenIndex(idx)}
+                onMouseLeave={() => setHoveredTokenIndex(null)}
+              >
+                {renderMarker('[[', revealed)}
+                <span
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (e.ctrlKey || e.metaKey || !isBlockActive) {
+                      onNavigateAnchor?.(seg.target);
+                    } else {
+                      onClickOffset?.(seg.start + 2);
+                    }
+                  }}
+                  style={{ color: 'var(--primary-color)' }}
+                  className="font-medium underline decoration-dotted hover:decoration-solid transition-colors cursor-pointer select-text"
+                  title={`Note interne : ${seg.target} (Clic pour ouvrir)`}
+                >
+                  {seg.label || seg.target}
+                </span>
+                {renderMarker(seg.label !== seg.target ? `|${seg.label}]]` : ']]', revealed)}
+              </span>
+            );
 
           case 'link':
             return (
