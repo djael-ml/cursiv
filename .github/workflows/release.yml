@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: cursiv-release-pipeline
+  group: cursiv-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

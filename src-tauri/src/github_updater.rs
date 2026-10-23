@@ -244,11 +244,39 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
     #[cfg(target_os = "windows")]
     {
         if !is_msi {
-            // Launch NSIS silent installer (/S) in currentUser mode
-            Command::new(&target_path)
-                .arg("/S")
-                .spawn()
-                .map_err(|e| format!("Failed to launch NSIS installer executable: {}", e))?;
+            // Launch NSIS silent installer (/S) detached with retry loop
+            let mut launched = false;
+            let mut last_err = String::new();
+
+            for attempt in 0..6 {
+                if attempt > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                }
+
+                let status = Command::new("cmd")
+                    .args(["/c", "start", "", &target_path.to_string_lossy(), "/S"])
+                    .spawn();
+
+                match status {
+                    Ok(_) => {
+                        launched = true;
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                    }
+                }
+            }
+
+            if !launched {
+                return Err(format!("Failed to launch NSIS installer executable: {}", last_err));
+            }
+
+            // Cleanly exit Cursiv process after brief moment so NSIS can replace binaries without sharing violation
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::process::exit(0);
+            });
         } else {
             Command::new("msiexec")
                 .arg("/i")
@@ -281,3 +309,4 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
         &sha256_hex[..12]
     ))
 }
+

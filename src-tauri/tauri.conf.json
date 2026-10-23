@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Cursiv",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "identifier": "fr.djaelmola.cursiv",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -50,6 +50,7 @@
         "silent": true
       },
       "nsis": {
+        "installerHooks": "installerHooks.nsh",
         "installMode": "currentUser",
         "compression": "lzma",
         "languages": ["French", "English"],

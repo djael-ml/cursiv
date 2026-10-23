@@ -263,9 +263,11 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
 
     const selStart = el.selectionStart ?? 0;
     const selEnd = el.selectionEnd ?? 0;
-    setCaretOffset(selStart);
+    const isBackward = el.selectionDirection === 'backward';
+    const activeCaret = isBackward ? selStart : selEnd;
+    setCaretOffset(activeCaret);
     setHasSelection(selStart !== selEnd);
-    onCursorChange?.(selStart);
+    onCursorChange?.(activeCaret);
 
     if (motionBlur) {
       setIsCaretMoving(true);
@@ -491,6 +493,9 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         onSelect={updateCaretPosition}
         onKeyUp={updateCaretPosition}
         onMouseUp={updateCaretPosition}
+        onMouseMove={(e) => {
+          if (e.buttons === 1) updateCaretPosition();
+        }}
         onClick={updateCaretPosition}
         onKeyDown={(e) => {
           onKeyDown?.(e);

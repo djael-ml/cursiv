@@ -1108,12 +1108,15 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     window.open(slugOrUrl, '_blank', 'noopener,noreferrer');
   };
 
-  // Notion-style Marquee / Lasso Selection when dragging from the page margins or across blocks
+  // Notion-style Marquee / Lasso Selection when dragging exclusively from the outer gutters / margins
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    // Allow normal text selection if clicking directly inside an input/textarea or button
+
+    // If clicking directly inside a block or inside the document sheet, allow pure native text selection
+    // without any lasso interference
     if (
+      target.closest('.cursiv-block') ||
       target.closest('textarea') ||
       target.closest('input') ||
       target.closest('button') ||
@@ -1125,6 +1128,14 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       return;
     }
 
+    // Clicking in empty margins / gutters outside blocks immediately blurs the active cursor
+    // to reveal the clean WYSIWYM rendered preview!
+    onSelectBlock(null);
+    setSelectedBlockIds([]);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     const startX = e.clientX;
     const startY = e.clientY;
     let isDraggingLasso = false;
@@ -1132,9 +1143,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     const onMouseMove = (moveEvent: MouseEvent) => {
       const dx = Math.abs(moveEvent.clientX - startX);
       const dy = Math.abs(moveEvent.clientY - startY);
-      if (!isDraggingLasso && (dx > 6 || dy > 6)) {
+      if (!isDraggingLasso && (dx > 8 || dy > 8)) {
         isDraggingLasso = true;
-        onSelectBlock(null);
         window.getSelection()?.removeAllRanges();
       }
       if (!isDraggingLasso) return;
@@ -1292,6 +1302,16 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     <div
       className="relative min-h-full w-full select-none"
       onMouseDown={handleCanvasMouseDown}
+      onClick={(e) => {
+        const target = e.target as HTMLElement;
+        if (!target.closest('.cursiv-block') && !target.closest('button')) {
+          onSelectBlock(null);
+          setSelectedBlockIds([]);
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         const blockEl = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
