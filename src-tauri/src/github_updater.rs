@@ -75,16 +75,31 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
 
 fn select_platform_asset(assets: &[GitHubReleaseAsset]) -> Option<String> {
     let os = env::consts::OS;
+    if os == "windows" {
+        // Prioritize Cursiv-Setup.exe or *-setup.exe (NSIS installer)
+        if let Some(exact) = assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("Cursiv-Setup.exe"))
+        {
+            return Some(exact.browser_download_url.clone());
+        }
+        if let Some(setup_exe) = assets
+            .iter()
+            .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+        {
+            return Some(setup_exe.browser_download_url.clone());
+        }
+        if let Some(any_exe) = assets
+            .iter()
+            .find(|a| a.name.to_lowercase().ends_with(".exe"))
+        {
+            return Some(any_exe.browser_download_url.clone());
+        }
+    }
+
     for asset in assets {
         let lower = asset.name.to_lowercase();
         match os {
-            "windows"
-                if lower.ends_with(".msi")
-                    || lower.ends_with("-setup.exe")
-                    || lower.ends_with(".exe") =>
-            {
-                return Some(asset.browser_download_url.clone());
-            }
             "macos" if lower.ends_with(".dmg") || lower.ends_with(".app.tar.gz") => {
                 return Some(asset.browser_download_url.clone());
             }
@@ -132,7 +147,8 @@ pub async fn check_github_updates(
 
             let latest_version = release.tag_name.trim_start_matches('v').to_string();
             let update_available = is_newer_version(CURRENT_VERSION, &latest_version);
-            let download_url = select_platform_asset(&release.assets);
+            let download_url = select_platform_asset(&release.assets)
+                .or_else(|| Some(format!("https://github.com/{}/releases/latest/download/Cursiv-Setup.exe", repo)));
 
             Ok(UpdateCheckResult {
                 current_version: CURRENT_VERSION.to_string(),
@@ -154,8 +170,11 @@ pub async fn check_github_updates(
             latest_commit_sha: branch_sha,
             update_available: false,
             release_notes: "Cursiv est à jour.".to_string(),
-            download_url: None,
-            html_url: format!("https://github.com/{}", repo),
+            download_url: Some(format!(
+                "https://github.com/{}/releases/latest/download/Cursiv-Setup.exe",
+                repo
+            )),
+            html_url: format!("https://github.com/{}/releases", repo),
             published_at: String::new(),
             repo,
         }),
@@ -202,12 +221,12 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
         .split('/')
         .next_back()
         .filter(|n| !n.is_empty())
-        .unwrap_or("cursiv-update-setup.msi");
+        .unwrap_or("Cursiv-Setup.exe");
 
     let safe_name = Path::new(raw_name)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("cursiv-update-setup.msi");
+        .unwrap_or("Cursiv-Setup.exe");
 
     let mut target_path: PathBuf = env::temp_dir();
     target_path.push(safe_name);
@@ -220,18 +239,21 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
     #[cfg(target_os = "windows")]
     {
         let lower = safe_name.to_lowercase();
-        if lower.ends_with(".msi") {
+        if lower.ends_with(".exe") {
+            // Silent NSIS update (/S) in currentUser mode (%LOCALAPPDATA%\Programs\Cursiv)
+            Command::new(&target_path)
+                .arg("/S")
+                .spawn()
+                .map_err(|e| format!("Failed to launch NSIS installer executable: {}", e))?;
+        } else if lower.ends_with(".msi") {
             Command::new("msiexec")
                 .arg("/i")
                 .arg(&target_path)
+                .arg("/passive")
                 .spawn()
                 .map_err(|e| format!("Failed to launch Windows MSI installer: {}", e))?;
-        } else if lower.ends_with(".exe") {
-            Command::new(&target_path)
-                .spawn()
-                .map_err(|e| format!("Failed to launch Windows installer executable: {}", e))?;
         } else {
-            return Err("Downloaded asset is not a valid Windows installer (.msi or .exe).".to_string());
+            return Err("Downloaded asset is not a valid Windows installer (.exe).".to_string());
         }
     }
 

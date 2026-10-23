@@ -1,5 +1,10 @@
 # Cursiv.
 
+[![Télécharger Cursiv pour Windows (.exe)](https://img.shields.io/badge/T%C3%A9l%C3%A9charger_Cursiv-Windows_Installer_(.exe)-0f172a?style=for-the-badge&logo=windows)](https://github.com/djael-ml/cursiv/releases/latest/download/Cursiv-Setup.exe)
+[![Dernière Release GitHub](https://img.shields.io/github/v/release/djael-ml/cursiv?style=for-the-badge&label=Release&color=2563eb)](https://github.com/djael-ml/cursiv/releases/latest)
+
+> 📥 **Téléchargement direct Windows (10 / 11 / LTSC 64-bit)** : [**`Cursiv-Setup.exe`**](https://github.com/djael-ml/cursiv/releases/latest/download/Cursiv-Setup.exe) *(Installeur NSIS sans droits Administrateur requis, avec WebView2 auto-bootstrapper et mise à jour automatique intégrée).*
+
 **Cursiv.** est une application desktop de lecture et d'édition Markdown **WYSIWYM** (*What You See Is What You Mean*) 100% gratuite et open-source (licence MIT), conçue avec **Tauri v2 (Rust)**, **React 19**, **TypeScript**, **Tailwind CSS** et **CodeMirror 6**.
 
 ---
@@ -13,6 +18,9 @@
 - **Sélection par rectangle façon Notion & Clic Droit personnalisé** :
   - Glissez la souris depuis les marges pour sélectionner plusieurs blocs avec un lasso bleu et les supprimer, copier ou dupliquer ensemble.
   - Menu contextuel clic droit complet dans l'éditeur et la barre latérale.
+- **Double Moteur d'Auto-Update GitHub Releases** :
+  - **Moteur Primaire (`@tauri-apps/plugin-updater`)** : vérification automatique du manifeste signé `latest.json`, barre de progression et relance automatique.
+  - **Moteur Fallback Direct (`.exe`)** : téléchargement direct de `Cursiv-Setup.exe` depuis GitHub Releases et mise à jour silencieuse NSIS (`/S`).
 - **Mathématiques, Physique & Chimie** : intégration native **KaTeX**, **mhchem** (`\ce{...}`), **Physics**, macros `\newcommand` et références croisées `\label` / `\eqref`.
 - **Blocs de Code & Diagrammes Live** : **CodeMirror 6** embarqué + rendu vectoriel SVG en direct (**Mermaid**, **Flowchart**, **Sequence**).
 - **6 Thèmes CSS avec Hot-Reload** : *GitHub, Night, Newsprint, Pixyll, Whitey, Gothic*.
@@ -51,8 +59,8 @@ npm run dev
 # Lancer l'application desktop native Tauri v2
 npm run tauri:dev
 
-# Compiler l'installateur desktop (.msi / .exe / .dmg / .AppImage)
-npm run tauri:build
+# Compiler l'installateur Windows NSIS (.exe)
+npx tauri build --bundles nsis
 ```
 
 ---

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop capabilities for Cursiv borderless window and file dialogs",
+  "description": "Default desktop capabilities for Cursiv borderless window, file dialogs, and auto-updater",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -18,6 +18,11 @@
     "dialog:allow-save",
     "dialog:allow-message",
     "dialog:allow-ask",
-    "dialog:allow-confirm"
+    "dialog:allow-confirm",
+    "updater:default",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:default",
+    "process:allow-restart"
   ]
 }

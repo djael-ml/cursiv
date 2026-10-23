@@ -8,6 +8,7 @@ dist-ssr/
 # Tauri & Rust build artifacts
 src-tauri/target/
 src-tauri/WixTools/
+.tauri-keys/
 
 # Local environment & logs
 *.local

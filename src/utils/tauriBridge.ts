@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { check, Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { FileEntryNode } from '../types/editor';
 
 export function isTauriEnvironment(): boolean {
@@ -16,7 +18,10 @@ export interface UpdateCheckResult {
   html_url: string;
   published_at: string;
   repo: string;
+  native_updater_available?: boolean;
 }
+
+let cachedNativeUpdate: Update | null = null;
 
 export interface PandocStatus {
   available: boolean;
@@ -275,25 +280,60 @@ export async function copyImageToLocalAssets(
 }
 
 export async function checkGitHubUpdates(repoOverride?: string): Promise<UpdateCheckResult> {
+  const repo = repoOverride?.trim() || 'djael-ml/cursiv';
+
   if (isTauriEnvironment()) {
+    // 1. Primary Engine: Tauri v2 Official Updater (@tauri-apps/plugin-updater -> latest.json)
+    try {
+      const update = await check();
+      if (update) {
+        cachedNativeUpdate = update;
+        return {
+          current_version: update.currentVersion || '1.14.0',
+          latest_version: update.version.replace(/^v/, ''),
+          latest_commit_sha: 'release-signed',
+          update_available: true,
+          release_notes:
+            update.body ||
+            'Nouvelle version signée de Cursiv disponible via Tauri Updater.',
+          download_url: `https://github.com/${repo}/releases/latest/download/Cursiv-Setup.exe`,
+          html_url: `https://github.com/${repo}/releases/latest`,
+          published_at: update.date || new Date().toISOString(),
+          repo,
+          native_updater_available: true,
+        };
+      }
+    } catch {
+      // Fallback to direct GitHub Releases API check (github_updater.rs)
+      cachedNativeUpdate = null;
+    }
+
+    // 2. Fallback Engine: Direct GitHub Releases .exe Inspector (github_updater.rs)
     return invoke<UpdateCheckResult>('check_github_updates', {
       repoOverride: repoOverride || null,
     });
   }
 
-  const repo = repoOverride?.trim() || 'djael-ml/cursiv';
   try {
     const resp = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
     if (resp.ok) {
       const data = await resp.json();
       const latest = (data.tag_name || '1.14.0').replace(/^v/, '');
+      const assets: Array<{ name: string; browser_download_url: string }> =
+        data.assets || [];
+      const exeAsset =
+        assets.find((a) => a.name.toLowerCase() === 'cursiv-setup.exe') ||
+        assets.find((a) => a.name.toLowerCase().endsWith('-setup.exe')) ||
+        assets[0];
       return {
         current_version: '1.14.0',
         latest_version: latest,
         latest_commit_sha: 'main-HEAD',
         update_available: latest !== '1.14.0',
         release_notes: data.body || 'Nouveautés Cursiv & optimisations Rust.',
-        download_url: data.assets?.[0]?.browser_download_url || null,
+        download_url:
+          exeAsset?.browser_download_url ||
+          `https://github.com/${repo}/releases/latest/download/Cursiv-Setup.exe`,
         html_url: data.html_url || `https://github.com/${repo}/releases`,
         published_at: data.published_at || new Date().toISOString(),
         repo,
@@ -306,20 +346,57 @@ export async function checkGitHubUpdates(repoOverride?: string): Promise<UpdateC
   return {
     current_version: '1.14.0',
     latest_version: '1.14.0',
-    latest_commit_sha: 'a94f21c',
+    latest_commit_sha: 'main',
     update_available: false,
     release_notes: 'Vous utilisez la dernière version stable de Cursiv 1.14.0.',
-    download_url: null,
-    html_url: `https://github.com/${repo}`,
+    download_url: `https://github.com/${repo}/releases/latest/download/Cursiv-Setup.exe`,
+    html_url: `https://github.com/${repo}/releases`,
     published_at: new Date().toISOString(),
     repo,
   };
 }
 
-export async function downloadAndApplyUpdate(downloadUrl: string): Promise<string> {
+export async function downloadAndApplyUpdate(
+  downloadUrl: string,
+  onProgress?: (percent: number, statusText: string) => void
+): Promise<string> {
   if (isTauriEnvironment()) {
-    return invoke<string>('download_and_apply_update', { downloadUrl });
+    // 1. Primary Engine: @tauri-apps/plugin-updater + @tauri-apps/plugin-process
+    try {
+      const update = cachedNativeUpdate || (await check());
+      if (update) {
+        let downloadedBytes = 0;
+        let totalBytes = 0;
+        await update.downloadAndInstall((event) => {
+          if (event.event === 'Started') {
+            totalBytes = event.data.contentLength || 0;
+            onProgress?.(5, 'Téléchargement de la mise à jour signée...');
+          } else if (event.event === 'Progress') {
+            downloadedBytes += event.data.chunkLength;
+            if (totalBytes > 0) {
+              const pct = Math.min(98, Math.round((downloadedBytes / totalBytes) * 100));
+              onProgress?.(pct, `Téléchargement en cours (${pct}%)...`);
+            } else {
+              onProgress?.(50, `Téléchargement (${(downloadedBytes / 1024 / 1024).toFixed(1)} Mo)...`);
+            }
+          } else if (event.event === 'Finished') {
+            onProgress?.(100, 'Installation terminée, relance de Cursiv...');
+          }
+        });
+        await relaunch();
+        return 'Mise à jour installée via Tauri Updater';
+      }
+    } catch {
+      // Fallback to direct NSIS .exe silent installer (/S)
+    }
+
+    // 2. Fallback Engine: Direct GitHub Release .exe Silent Installer (/S)
+    onProgress?.(35, "Téléchargement direct de l'installeur Cursiv-Setup.exe...");
+    const res = await invoke<string>('download_and_apply_update', { downloadUrl });
+    onProgress?.(100, 'Installation silencieuse NSIS (/S) lancée !');
+    return res;
   }
+
   window.open(downloadUrl, '_blank', 'noopener,noreferrer');
   return downloadUrl;
 }

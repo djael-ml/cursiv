@@ -1,56 +1,139 @@
-name: Build & Release Cursiv Desktop
+name: Build & Publish Cursiv NSIS (.exe) Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build-tauri:
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: 'windows-latest'
-            args: ''
-          - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-          - platform: 'ubuntu-22.04'
-            args: ''
+  release-windows-nsis:
+    name: Build Windows NSIS (.exe) & Publish Release
+    runs-on: windows-latest
 
-    runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'npm'
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri Desktop App
-        uses: tauri-apps/tauri-action@v0
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cargo cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Prepare Tauri Signing Keys
+        shell: pwsh
+        env:
+          SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SECRET_PWD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
+            Write-Host "No TAURI_SIGNING_PRIVATE_KEY secret found in repository settings; generating build signing key..."
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\tauri-keys" | Out-Null
+            npx tauri signer generate -w "$env:RUNNER_TEMP\tauri-keys\cursiv.key" --ci
+            $privKey = Get-Content "$env:RUNNER_TEMP\tauri-keys\cursiv.key" -Raw
+            $pubKey = (Get-Content "$env:RUNNER_TEMP\tauri-keys\cursiv.key.pub" -Raw).Trim()
+
+            $confPath = "src-tauri/tauri.conf.json"
+            $conf = Get-Content $confPath -Raw | ConvertFrom-Json
+            $conf.plugins.updater.pubkey = $pubKey
+            $conf | ConvertTo-Json -Depth 10 | Set-Content $confPath -Encoding UTF8
+
+            $eof = "EOF_" + [guid]::NewGuid().ToString("N")
+            Add-Content -Path $env:GITHUB_ENV -Value "TAURI_SIGNING_PRIVATE_KEY<<$eof`n$privKey`n$eof"
+            Add-Content -Path $env:GITHUB_ENV -Value "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
+          } else {
+            Write-Host "Using repository secret TAURI_SIGNING_PRIVATE_KEY."
+            $eof = "EOF_" + [guid]::NewGuid().ToString("N")
+            Add-Content -Path $env:GITHUB_ENV -Value "TAURI_SIGNING_PRIVATE_KEY<<$eof`n$($env:SECRET_KEY)`n$eof"
+            Add-Content -Path $env:GITHUB_ENV -Value "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$($env:SECRET_PWD)"
+          }
+
+      - name: Build Tauri NSIS Installer (.exe)
+        run: npx tauri build --bundles nsis
+
+      - name: Prepare Cursiv-Setup.exe & latest.json manifest
+        shell: pwsh
+        run: |
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $setupExe = Get-ChildItem -Path $nsisDir -Filter "*-setup.exe" | Where-Object { $_.Name -ne "Cursiv-Setup.exe" } | Select-Object -First 1
+          if (-not $setupExe) {
+            throw "NSIS installer *-setup.exe was not found in $nsisDir"
+          }
+
+          Copy-Item $setupExe.FullName -Destination "$nsisDir/Cursiv-Setup.exe" -Force
+          Write-Host "Created fixed installer: $nsisDir/Cursiv-Setup.exe from $($setupExe.Name)"
+
+          $sigFile = Get-ChildItem -Path $nsisDir -Filter "*.exe.sig" | Select-Object -First 1
+          $signature = ""
+          if ($sigFile) {
+            $signature = (Get-Content $sigFile.FullName -Raw).Trim()
+            Copy-Item $sigFile.FullName -Destination "$nsisDir/Cursiv-Setup.exe.sig" -Force
+          }
+
+          $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $version = $conf.version
+          $tag = "v$version"
+          Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_TAG=$tag"
+          Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_VERSION=$version"
+
+          $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$($setupExe.Name)"
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          $latestManifest = @{
+            version = $version
+            notes = "Cursiv v$version — Installeur Windows NSIS (.exe) & Mise à jour automatique."
+            pub_date = $pubDate
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature
+                url = $downloadUrl
+              }
+            }
+          }
+
+          $latestManifest | ConvertTo-Json -Depth 6 | Set-Content "latest.json" -Encoding UTF8
+          Get-Content "latest.json"
+
+      - name: Publish NSIS .exe & Updater Manifest to GitHub Releases
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'Cursiv v__VERSION__'
-          releaseBody: 'Téléchargez les installateurs natifs Cursiv ci-dessous.'
-          releaseDraft: false
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Cursiv v${{ env.RELEASE_VERSION }}
+          body: |
+            ## 🪶 Cursiv v${{ env.RELEASE_VERSION }} — Windows Installer (`.exe`)
+
+            ### 📥 Téléchargement Direct (Windows 10 / 11 / LTSC 64-bit)
+            - **[📦 Télécharger Cursiv-Setup.exe (Lien direct)](https://github.com/${{ github.repository }}/releases/latest/download/Cursiv-Setup.exe)**
+
+            ### ✨ Points clés de l'installeur
+            - **Format NSIS (`.exe`)** : installation par utilisateur (`%LOCALAPPDATA%\Programs\Cursiv`) sans privilèges Administrateur UAC requis.
+            - **Compatible Windows 10 LTSC** : téléchargement automatique et silencieux du runtime WebView2 si absent.
+            - **Auto-Updater intégré** : mises à jour automatiques signées via `latest.json` et fallback direct `.exe`.
+          draft: false
           prerelease: false
-          args: ${{ matrix.args }}
+          overwrite_files: true
+          files: |
+            src-tauri/target/release/bundle/nsis/Cursiv-Setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.sig
+            latest.json
