@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: cursiv-release-pipeline
+  cancel-in-progress: true
+
 jobs:
   release-windows-nsis:
     name: Build Windows NSIS (.exe) & Publish Release
@@ -68,8 +72,10 @@ jobs:
       - name: Build Tauri NSIS Installer (.exe)
         run: npx tauri build --bundles nsis
 
-      - name: Prepare Cursiv-Setup.exe & latest.json manifest
+      - name: Prepare Cursiv-Setup.exe, latest.json & Clean Existing Tag Release
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $nsisDir = "src-tauri/target/release/bundle/nsis"
           $setupExe = Get-ChildItem -Path $nsisDir -Filter "*-setup.exe" | Where-Object { $_.Name -ne "Cursiv-Setup.exe" } | Select-Object -First 1
@@ -93,12 +99,28 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_TAG=$tag"
           Add-Content -Path $env:GITHUB_ENV -Value "RELEASE_VERSION=$version"
 
+          # If a release with this tag already exists, remove it first so action-gh-release performs a fresh POST create
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          try {
+            $existing = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" -Headers $headers -Method Get -ErrorAction Stop
+            if ($existing -and $existing.id) {
+              Write-Host "Removing previous release id=$($existing.id) for tag $tag before fresh publish..."
+              Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/$($existing.id)" -Headers $headers -Method Delete -ErrorAction SilentlyContinue
+            }
+          } catch {
+            Write-Host "No existing release found for $tag (ready for fresh creation)."
+          }
+
           $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$($setupExe.Name)"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           $latestManifest = @{
             version = $version
-            notes = "Cursiv v$version — Installeur Windows NSIS (.exe) & Mise à jour automatique."
+            notes = "Cursiv v$version — Conçu par Djaël Mola. Installeur Windows NSIS (.exe) & Mise à jour automatique."
             pub_date = $pubDate
             platforms = @{
               "windows-x86_64" = @{
@@ -120,17 +142,18 @@ jobs:
           name: Cursiv v${{ env.RELEASE_VERSION }}
           body: |
             ## 🪶 Cursiv v${{ env.RELEASE_VERSION }} — Windows Installer (`.exe`)
+            *Conçu et développé par **Djaël Mola***
 
             ### 📥 Téléchargement Direct (Windows 10 / 11 / LTSC 64-bit)
             - **[📦 Télécharger Cursiv-Setup.exe (Lien direct)](https://github.com/${{ github.repository }}/releases/latest/download/Cursiv-Setup.exe)**
 
-            ### ✨ Points clés de l'installeur
+            ### ✨ Points clés de cette version
+            - **Nouvelle icône officielle `Cursiv.`** intégrée à l'exécutable et à l'installeur.
             - **Format NSIS (`.exe`)** : installation par utilisateur (`%LOCALAPPDATA%\Programs\Cursiv`) sans privilèges Administrateur UAC requis.
             - **Compatible Windows 10 LTSC** : téléchargement automatique et silencieux du runtime WebView2 si absent.
-            - **Auto-Updater intégré** : mises à jour automatiques signées via `latest.json` et fallback direct `.exe`.
+            - **Échelle de la page (`Ctrl + Molette`)**, **Flou de mouvement du curseur (*Motion Blur*)**, **Couleur d'accentuation ultra-discrète** et **Mini-barre de sélection contextuelle**.
           draft: false
           prerelease: false
-          overwrite_files: true
           files: |
             src-tauri/target/release/bundle/nsis/Cursiv-Setup.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
