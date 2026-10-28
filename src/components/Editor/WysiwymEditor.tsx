@@ -197,6 +197,126 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     }
   }, [externalCaretVersion, externalCaretOffset]);
 
+  // Natural Click on Bottom Margin, Top Margin, or Page Gutters:
+  // Instantly enters edit mode at the end of the document, start of document, or corresponding line
+  const handleCanvasOrMarginClick = (clientX: number, clientY: number, isDoubleClick = false) => {
+    const currentBlocks = blocksRef.current;
+    if (currentBlocks.length === 0) return;
+
+    setSelectedBlockIds([]);
+
+    const firstBlock = currentBlocks[0];
+    const lastBlock = currentBlocks[currentBlocks.length - 1];
+    const firstEl = firstBlock ? blockDomRefs.current[firstBlock.id] : null;
+    const lastEl = lastBlock ? blockDomRefs.current[lastBlock.id] : null;
+
+    // 1. Clicked in the Bottom Margin (below the last block):
+    // Places cursor at the very end of the document in edit mode
+    const isBelowLast = !lastEl || clientY > lastEl.getBoundingClientRect().bottom - 4;
+    if (isBelowLast) {
+      if (lastBlock.type === 'paragraph') {
+        if (isDoubleClick && lastBlock.text.trim() !== '') {
+          // Double-click in bottom margin: create a new empty paragraph at the end
+          const newParaId = nextBlockId('p');
+          onChangeBlocksRef.current([...currentBlocks, { id: newParaId, type: 'paragraph', text: '' }]);
+          onSelectBlockRef.current(newParaId, 0);
+          setCursorOffset(0, true);
+        } else {
+          onSelectBlockRef.current(lastBlock.id, lastBlock.text.length);
+          setCursorOffset(lastBlock.text.length, true);
+        }
+      } else if (lastBlock.type === 'list' && lastBlock.items.length > 0) {
+        const lastItem = lastBlock.items[lastBlock.items.length - 1];
+        setActiveListItemId(lastItem.id);
+        onSelectBlockRef.current(lastBlock.id, lastItem.text.length);
+        setCursorOffset(lastItem.text.length, true);
+      } else if (lastBlock.type === 'heading' || lastBlock.type === 'blockquote') {
+        onSelectBlockRef.current(lastBlock.id, lastBlock.text.length);
+        setCursorOffset(lastBlock.text.length, true);
+      } else if (lastBlock.type === 'callout') {
+        setActiveCalloutField('content');
+        onSelectBlockRef.current(lastBlock.id, lastBlock.content.length);
+        setCursorOffset(lastBlock.content.length, true);
+      } else {
+        // Last block is non-textual (table, code, math, hr, image): append a new paragraph
+        const newParaId = nextBlockId('p');
+        onChangeBlocksRef.current([...currentBlocks, { id: newParaId, type: 'paragraph', text: '' }]);
+        onSelectBlockRef.current(newParaId, 0);
+        setCursorOffset(0, true);
+      }
+      return;
+    }
+
+    // 2. Clicked in the Top Margin (above the first block):
+    // Places cursor at the very beginning of the document
+    const isAboveFirst = firstEl && clientY < firstEl.getBoundingClientRect().top + 4;
+    if (isAboveFirst) {
+      if (isDoubleClick && firstBlock.type !== 'paragraph') {
+        const newParaId = nextBlockId('p');
+        onChangeBlocksRef.current([{ id: newParaId, type: 'paragraph', text: '' }, ...currentBlocks]);
+        onSelectBlockRef.current(newParaId, 0);
+        setCursorOffset(0, true);
+      } else {
+        onSelectBlockRef.current(firstBlock.id, 0);
+        setCursorOffset(0, true);
+      }
+      return;
+    }
+
+    // 3. Clicked in the Left or Right Gutters beside an existing block or between blocks:
+    // Finds vertically closest block and places cursor at the beginning (if left) or end (if right) of that line
+    let closestBlock: MarkdownBlock | null = null;
+    let minVertDist = Infinity;
+    for (const b of currentBlocks) {
+      const el = blockDomRefs.current[b.id];
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      const dist = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+      if (dist < minVertDist) {
+        minVertDist = dist;
+        closestBlock = b;
+      }
+    }
+
+    if (closestBlock) {
+      if (
+        closestBlock.type === 'paragraph' ||
+        closestBlock.type === 'heading' ||
+        closestBlock.type === 'blockquote' ||
+        closestBlock.type === 'footnote-def'
+      ) {
+        setPendingMousePoint({
+          blockId: closestBlock.id,
+          point: {
+            clientX,
+            clientY,
+            seq: Date.now() + Math.random(),
+          },
+        });
+        onSelectBlockRef.current(closestBlock.id);
+      } else if (closestBlock.type === 'list' && closestBlock.items.length > 0) {
+        let bestItem = closestBlock.items[0];
+        let bestItemDist = Infinity;
+        for (const it of closestBlock.items) {
+          const itemKey = `${closestBlock.id}:${it.id}`;
+          setPendingMousePoint({
+            blockId: itemKey,
+            point: {
+              clientX,
+              clientY,
+              seq: Date.now() + Math.random(),
+            },
+          });
+          setActiveListItemId(it.id);
+          onSelectBlockRef.current(closestBlock.id);
+          return;
+        }
+      } else {
+        onSelectBlockRef.current(closestBlock.id);
+      }
+    }
+  };
+
   // Activate an inactive block at the exact clicked character OR preserve a mouse drag selection (left->right or right->left)
   const activateBlockFromMouse = (
     e: React.MouseEvent<HTMLElement>,
@@ -926,36 +1046,78 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       return;
     }
 
-    // Windows inline formatting shortcuts: Ctrl+B (Bold), Ctrl+I (Italic), Ctrl+K (Link)
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
-      const keyLower = e.key.toLowerCase();
-      if (keyLower === 'b' || keyLower === 'i' || keyLower === 'k') {
-        e.preventDefault();
-        const selectedSlice = currentText.slice(selStart, selEnd);
-        let wrapped = '';
-        let innerStart = selStart;
-        let innerEnd = selEnd;
-        if (keyLower === 'b') {
-          const content = selectedSlice || 'texte';
-          wrapped = `**${content}**`;
-          innerStart = selStart + 2;
-          innerEnd = innerStart + content.length;
-        } else if (keyLower === 'i') {
-          const content = selectedSlice || 'texte';
-          wrapped = `*${content}*`;
-          innerStart = selStart + 1;
-          innerEnd = innerStart + content.length;
-        } else {
-          const content = selectedSlice || 'lien';
-          wrapped = `[${content}](https://)`;
-          innerStart = selStart + content.length + 3;
-          innerEnd = innerStart + 8;
+    // Ultra-natural inline formatting shortcuts with Smart Word-at-Caret & Toggle Unwrapping:
+    // Ctrl+B (**gras**), Ctrl+I (*italique*), Ctrl+U (<u>souligné</u>), Ctrl+Shift+S (~~barré~~), Ctrl+Shift+H (==surligné==), Ctrl+K ([lien](url))
+    const isCtrlOrCmd = (e.ctrlKey || e.metaKey) && !e.altKey;
+    const keyLower = e.key.toLowerCase();
+    const isFormatShortcut =
+      (isCtrlOrCmd && !e.shiftKey && (keyLower === 'b' || keyLower === 'i' || keyLower === 'u' || keyLower === 'k')) ||
+      (isCtrlOrCmd && e.shiftKey && (keyLower === 's' || keyLower === 'h'));
+
+    if (isFormatShortcut) {
+      e.preventDefault();
+
+      let pfx = '**';
+      let sfx = '**';
+      if (keyLower === 'i') { pfx = '*'; sfx = '*'; }
+      else if (keyLower === 'u') { pfx = '<u>'; sfx = '</u>'; }
+      else if (keyLower === 's') { pfx = '~~'; sfx = '~~'; }
+      else if (keyLower === 'h') { pfx = '=='; sfx = '=='; }
+      else if (keyLower === 'k') { pfx = '['; sfx = '](https://)'; }
+
+      // If no text is selected, automatically expand to the word at cursor (Word / Obsidian natural behavior)
+      let activeStart = selStart;
+      let activeEnd = selEnd;
+      if (activeStart === activeEnd && keyLower !== 'k') {
+        const isWordCh = (ch: string) => /[a-zA-Z0-9_\u00C0-\u017F\-]/.test(ch);
+        if (activeStart < currentText.length && isWordCh(currentText[activeStart])) {
+          while (activeStart > 0 && isWordCh(currentText[activeStart - 1])) activeStart--;
+          while (activeEnd < currentText.length && isWordCh(currentText[activeEnd])) activeEnd++;
+        } else if (activeStart > 0 && isWordCh(currentText[activeStart - 1])) {
+          activeStart = activeStart - 1;
+          while (activeStart > 0 && isWordCh(currentText[activeStart - 1])) activeStart--;
+          while (activeEnd < currentText.length && isWordCh(currentText[activeEnd])) activeEnd++;
         }
-        const nextText = currentText.slice(0, selStart) + wrapped + currentText.slice(selEnd);
-        setProgrammaticSelection?.(innerStart, innerEnd, 'forward');
-        applyNewText(nextText, innerEnd);
+      }
+
+      const slice = currentText.slice(activeStart, activeEnd);
+
+      // Check if already formatted (toggle unwrap)
+      const outsideBefore = currentText.slice(Math.max(0, activeStart - pfx.length), activeStart);
+      const outsideAfter = currentText.slice(activeEnd, activeEnd + sfx.length);
+      const isWrappedOutside = outsideBefore === pfx && outsideAfter === sfx;
+      const isWrappedInside = slice.startsWith(pfx) && slice.endsWith(sfx) && slice.length >= pfx.length + sfx.length;
+
+      if (isWrappedOutside) {
+        // Toggle OFF: remove outside delimiters
+        const nextText =
+          currentText.slice(0, activeStart - pfx.length) + slice + currentText.slice(activeEnd + sfx.length);
+        const nextStart = activeStart - pfx.length;
+        const nextEnd = nextStart + slice.length;
+        setProgrammaticSelection?.(nextStart, nextEnd, 'forward');
+        applyNewText(nextText, nextEnd);
         return;
       }
+
+      if (isWrappedInside) {
+        // Toggle OFF: remove inside delimiters
+        const unwrapped = slice.slice(pfx.length, slice.length - sfx.length);
+        const nextText = currentText.slice(0, activeStart) + unwrapped + currentText.slice(activeEnd);
+        const nextEnd = activeStart + unwrapped.length;
+        setProgrammaticSelection?.(activeStart, nextEnd, 'forward');
+        applyNewText(nextText, nextEnd);
+        return;
+      }
+
+      // Toggle ON: apply formatting
+      const content = slice || (keyLower === 'k' ? 'lien' : 'texte');
+      const wrapped = `${pfx}${content}${sfx}`;
+      const nextText = currentText.slice(0, activeStart) + wrapped + currentText.slice(activeEnd);
+      const nextStart = activeStart + pfx.length;
+      const nextEnd = keyLower === 'k' ? nextStart + content.length + 8 : nextStart + content.length;
+      setProgrammaticSelection?.(nextStart, nextEnd, 'forward');
+      applyNewText(nextText, nextEnd);
+      return;
     }
 
     // Cancel any pending debounced Markdown transform when pressing Enter / Shift+Enter / Ctrl+Enter
@@ -1365,6 +1527,169 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       setProgrammaticSelection?.(nextPos, nextPos, 'none');
       applyNewText(nextText, nextPos);
       return;
+    }
+
+    // Natural Backspace on empty auto-paired brackets & markdown delimiters ((), [], {}, "", **, ``, ~~)
+    if (
+      e.key === 'Backspace' &&
+      selStart === selEnd &&
+      selStart > 0 &&
+      selStart < currentText.length &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey
+    ) {
+      const prevC = currentText[selStart - 1];
+      const nextC = currentText[selStart];
+      const pairs: Record<string, string> = {
+        '(': ')',
+        '[': ']',
+        '{': '}',
+        '"': '"',
+        "'": "'",
+        '`': '`',
+        '*': '*',
+        '~': '~',
+        '=': '=',
+      };
+      if (pairs[prevC] === nextC) {
+        e.preventDefault();
+        const nextText = currentText.slice(0, selStart - 1) + currentText.slice(selStart + 1);
+        const nextPos = selStart - 1;
+        setProgrammaticSelection?.(nextPos, nextPos, 'none');
+        applyNewText(nextText, nextPos);
+        return;
+      }
+    }
+
+    // Ctrl+Shift+K or Shift+Delete: Delete current line cleanly
+    if (
+      ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'k') ||
+      (e.shiftKey && e.key === 'Delete' && selStart === selEnd)
+    ) {
+      e.preventDefault();
+      let delStart = lineStart;
+      let delEnd = lineEnd;
+      if (delEnd < currentText.length && currentText[delEnd] === '\n') {
+        delEnd++;
+      } else if (delStart > 0 && currentText[delStart - 1] === '\n') {
+        delStart--;
+      }
+      const nextText = currentText.slice(0, delStart) + currentText.slice(delEnd);
+      const nextPos = Math.min(delStart, nextText.length);
+      setProgrammaticSelection?.(nextPos, nextPos, 'none');
+      applyNewText(nextText, nextPos);
+      return;
+    }
+
+    // Ctrl+D inside a block: Duplicates the selection OR duplicates the current line below
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+      e.preventDefault();
+      if (selStart !== selEnd) {
+        const selected = currentText.slice(selStart, selEnd);
+        const nextText = currentText.slice(0, selEnd) + selected + currentText.slice(selEnd);
+        const nextPos = selEnd + selected.length;
+        setProgrammaticSelection?.(selEnd, nextPos, 'forward');
+        applyNewText(nextText, nextPos);
+      } else {
+        const fullLine = currentText.slice(lineStart, lineEnd);
+        const nextText = currentText.slice(0, lineEnd) + '\n' + fullLine + currentText.slice(lineEnd);
+        const nextPos = lineEnd + 1 + (selStart - lineStart);
+        setProgrammaticSelection?.(nextPos, nextPos, 'none');
+        applyNewText(nextText, nextPos);
+      }
+      return;
+    }
+
+    // Alt+ArrowUp / Alt+ArrowDown inside multi-line text blocks: Reorders current line up or down (VS Code style)
+    if (
+      e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+      currentText.includes('\n')
+    ) {
+      const allLines = currentText.split('\n');
+      let currentLineIdx = 0;
+      let charAcc = 0;
+      for (let i = 0; i < allLines.length; i++) {
+        const len = allLines[i].length;
+        if (selStart >= charAcc && selStart <= charAcc + len) {
+          currentLineIdx = i;
+          break;
+        }
+        charAcc += len + 1;
+      }
+      const targetLineIdx = e.key === 'ArrowUp' ? currentLineIdx - 1 : currentLineIdx + 1;
+      if (targetLineIdx >= 0 && targetLineIdx < allLines.length) {
+        e.preventDefault();
+        const colOffset = selStart - lineStart;
+        const [movedLine] = allLines.splice(currentLineIdx, 1);
+        allLines.splice(targetLineIdx, 0, movedLine);
+        const nextText = allLines.join('\n');
+        let newTargetLineStart = 0;
+        for (let i = 0; i < targetLineIdx; i++) {
+          newTargetLineStart += allLines[i].length + 1;
+        }
+        const nextPos = Math.min(newTargetLineStart + allLines[targetLineIdx].length, newTargetLineStart + colOffset);
+        setProgrammaticSelection?.(nextPos, nextPos, 'none');
+        applyNewText(nextText, nextPos);
+        return;
+      }
+    }
+
+    // Ctrl+Shift+Enter: Inserts line or paragraph ABOVE current line
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+      e.preventDefault();
+      if (lineStart > 0) {
+        const ins = `${effectiveIndent}\n`;
+        const nextText = currentText.slice(0, lineStart) + ins + currentText.slice(lineStart);
+        const nextPos = lineStart + effectiveIndent.length;
+        setProgrammaticSelection?.(nextPos, nextPos, 'none');
+        applyNewText(nextText, nextPos);
+      } else {
+        const idx = blocks.findIndex((b) => b.id === block.id);
+        const newParaId = nextBlockId('p');
+        const copy = [...blocks];
+        copy.splice(idx, 0, { id: newParaId, type: 'paragraph', text: '' });
+        onChangeBlocks(copy);
+        setCursorOffset(0, true);
+        onSelectBlock(newParaId, 0);
+      }
+      return;
+    }
+
+    // Ctrl+Home / Ctrl+End: Jump to document start / document end
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      if (e.key === 'Home') {
+        e.preventDefault();
+        const first = blocks[0];
+        if (first) {
+          scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+          onSelectBlock(first.id, 0);
+          setCursorOffset(0, true);
+        }
+        return;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        const last = blocks[blocks.length - 1];
+        if (last) {
+          scrollContainerRef.current?.scrollTo({
+            top: scrollContainerRef.current.scrollHeight,
+            behavior: 'smooth',
+          });
+          const endPos =
+            last.type === 'paragraph' || last.type === 'heading' || last.type === 'blockquote'
+              ? last.text.length
+              : last.type === 'callout'
+              ? last.content.length
+              : 0;
+          onSelectBlock(last.id, endPos);
+          setCursorOffset(endPos, true);
+        }
+        return;
+      }
     }
 
     // Backspace at the very beginning of a Heading progressively demotes it (H3 -> H2 -> H1 -> Paragraph)
@@ -2120,13 +2445,10 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           return;
         }
         const target = e.target as HTMLElement;
-        if (!target.closest('.cursiv-block') && !target.closest('button')) {
-          onSelectBlock(null);
-          setSelectedBlockIds([]);
-          if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-          }
+        if (target.closest('.cursiv-block') || target.closest('button') || target.closest('a') || target.closest('input')) {
+          return;
         }
+        handleCanvasOrMarginClick(e.clientX, e.clientY, e.detail >= 2);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -2374,29 +2696,12 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
             mouseDownInsideBlockRef.current = false;
             return;
           }
-          if (e.target === e.currentTarget && selectedBlockIds.length === 0) {
-            const last = blocks[blocks.length - 1];
-            const lastEl = last ? blockDomRefs.current[last.id] : null;
-            const clickedBelowLastBlock =
-              !lastEl || e.clientY > lastEl.getBoundingClientRect().bottom + 14;
-            if (clickedBelowLastBlock) {
-              if (last && last.type === 'paragraph') {
-                onSelectBlock(last.id, last.text.length);
-                setCursorOffset(last.text.length, true);
-              } else {
-                const newParaId = nextBlockId('p');
-                onChangeBlocks([...blocks, { id: newParaId, type: 'paragraph', text: '' }]);
-                onSelectBlock(newParaId, 0);
-                setCursorOffset(0, true);
-              }
-            } else {
-              onSelectBlock(null);
-              setSelectedBlockIds([]);
-              if (document.activeElement instanceof HTMLElement) {
-                document.activeElement.blur();
-              }
-            }
+          const target = e.target as HTMLElement;
+          if (target.closest('.cursiv-block') || target.closest('button') || target.closest('a')) {
+            return;
           }
+          e.stopPropagation();
+          handleCanvasOrMarginClick(e.clientX, e.clientY, e.detail >= 2);
         }}
         className={`cursiv-editor-sheet mx-auto px-5 sm:px-10 md:px-14 pt-8 sm:pt-12 pb-44 select-text ${
           preferences.focusMode ? 'cursiv-focus-mode' : ''
@@ -4100,6 +4405,17 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           );
         });
       })()}
+
+        {/* Natural Bottom Margin Editing Trigger Area: Click or double-click to instantly edit at end of document */}
+        <div
+          data-role="bottom-margin-catch"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleCanvasOrMarginClick(e.clientX, e.clientY, e.detail >= 2);
+          }}
+          className="w-full min-h-[30vh] cursor-text"
+          title="Cliquer pour écrire à la fin du document"
+        />
       </div>
     </div>
   );

@@ -922,9 +922,45 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
           }
         }}
         onMouseDown={(e) => {
-          if (e.button === 0 && e.detail === 1) {
+          if (e.button !== 0) return;
+          const hitTest = hitTestRef.current;
+          const el = textareaRef.current;
+          if (!hitTest || !el) return;
+
+          if (e.detail === 1) {
             e.preventDefault();
             startPointerSelection(e.clientX, e.clientY, e.shiftKey);
+          } else if (e.detail === 2) {
+            // Natural Word Selection on Double-Click
+            e.preventDefault();
+            const clickOffset = getCharOffsetFromPoint(hitTest, el, value, e.clientX, e.clientY);
+            let start = clickOffset;
+            let end = clickOffset;
+            const isWordChar = (ch: string) => /[a-zA-Z0-9_\u00C0-\u017F\-]/.test(ch);
+            if (clickOffset < value.length && isWordChar(value[clickOffset])) {
+              while (start > 0 && isWordChar(value[start - 1])) start--;
+              while (end < value.length && isWordChar(value[end])) end++;
+            } else if (clickOffset > 0 && isWordChar(value[clickOffset - 1])) {
+              start = clickOffset - 1;
+              while (start > 0 && isWordChar(value[start - 1])) start--;
+              while (end < value.length && isWordChar(value[end])) end++;
+            } else {
+              // Whitespace run
+              while (start > 0 && /\s/.test(value[start - 1]) && value[start - 1] !== '\n') start--;
+              while (end < value.length && /\s/.test(value[end]) && value[end] !== '\n') end++;
+            }
+            if (start === end && end < value.length) end++;
+            setProgrammaticSelection(start, end, 'forward');
+            measureSelectionToolbarCoords(start, end);
+          } else if (e.detail >= 3) {
+            // Natural Line Selection on Triple-Click
+            e.preventDefault();
+            const clickOffset = getCharOffsetFromPoint(hitTest, el, value, e.clientX, e.clientY);
+            const lineStart = value.lastIndexOf('\n', Math.max(0, clickOffset - 1)) + 1;
+            const nextNl = value.indexOf('\n', clickOffset);
+            const lineEnd = nextNl === -1 ? value.length : nextNl;
+            setProgrammaticSelection(lineStart, lineEnd, 'forward');
+            measureSelectionToolbarCoords(lineStart, lineEnd);
           }
         }}
         onFocus={() => {
