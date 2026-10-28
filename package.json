@@ -1,7 +1,7 @@
 {
   "name": "cursiv",
   "private": true,
-  "version": "1.18.4",
+  "version": "1.18.5",
   "type": "module",
   "description": "Cursiv — Éditeur Markdown WYSIWYM conçu par Djaël Mola",
   "author": "Djaël Mola",

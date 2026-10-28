@@ -197,21 +197,22 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     }
   }, [externalCaretVersion, externalCaretOffset]);
 
-  // Natural Click on Bottom Margin, Top Margin, or Page Gutters:
-  // Instantly enters edit mode at the end of the document, start of document, or corresponding line
+  // Natural Click on Margins:
+  // - Clicking in the bottom margin enters edit mode at the end of the document
+  // - Clicking in the left or right margin simply deselects text and blurs the editor
   const handleCanvasOrMarginClick = (clientX: number, clientY: number, isDoubleClick = false) => {
     const currentBlocks = blocksRef.current;
     if (currentBlocks.length === 0) return;
 
     setSelectedBlockIds([]);
+    setInitialBlockSelection(null);
+    setPendingMousePoint(null);
 
-    const firstBlock = currentBlocks[0];
     const lastBlock = currentBlocks[currentBlocks.length - 1];
-    const firstEl = firstBlock ? blockDomRefs.current[firstBlock.id] : null;
     const lastEl = lastBlock ? blockDomRefs.current[lastBlock.id] : null;
 
     // 1. Clicked in the Bottom Margin (below the last block):
-    // Places cursor at the very end of the document in edit mode
+    // Enters edit mode at the very end of the document
     const isBelowLast = !lastEl || clientY > lastEl.getBoundingClientRect().bottom - 4;
     if (isBelowLast) {
       if (lastBlock.type === 'paragraph') {
@@ -247,74 +248,13 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       return;
     }
 
-    // 2. Clicked in the Top Margin (above the first block):
-    // Places cursor at the very beginning of the document
-    const isAboveFirst = firstEl && clientY < firstEl.getBoundingClientRect().top + 4;
-    if (isAboveFirst) {
-      if (isDoubleClick && firstBlock.type !== 'paragraph') {
-        const newParaId = nextBlockId('p');
-        onChangeBlocksRef.current([{ id: newParaId, type: 'paragraph', text: '' }, ...currentBlocks]);
-        onSelectBlockRef.current(newParaId, 0);
-        setCursorOffset(0, true);
-      } else {
-        onSelectBlockRef.current(firstBlock.id, 0);
-        setCursorOffset(0, true);
-      }
-      return;
+    // 2. Clicked in Left or Right margin (gutters):
+    // Pure deselection — deselects any active text and blurs the active block
+    onSelectBlockRef.current(null);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
     }
-
-    // 3. Clicked in the Left or Right Gutters beside an existing block or between blocks:
-    // Finds vertically closest block and places cursor at the beginning (if left) or end (if right) of that line
-    let closestBlock: MarkdownBlock | null = null;
-    let minVertDist = Infinity;
-    for (const b of currentBlocks) {
-      const el = blockDomRefs.current[b.id];
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      const dist = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
-      if (dist < minVertDist) {
-        minVertDist = dist;
-        closestBlock = b;
-      }
-    }
-
-    if (closestBlock) {
-      if (
-        closestBlock.type === 'paragraph' ||
-        closestBlock.type === 'heading' ||
-        closestBlock.type === 'blockquote' ||
-        closestBlock.type === 'footnote-def'
-      ) {
-        setPendingMousePoint({
-          blockId: closestBlock.id,
-          point: {
-            clientX,
-            clientY,
-            seq: Date.now() + Math.random(),
-          },
-        });
-        onSelectBlockRef.current(closestBlock.id);
-      } else if (closestBlock.type === 'list' && closestBlock.items.length > 0) {
-        let bestItem = closestBlock.items[0];
-        let bestItemDist = Infinity;
-        for (const it of closestBlock.items) {
-          const itemKey = `${closestBlock.id}:${it.id}`;
-          setPendingMousePoint({
-            blockId: itemKey,
-            point: {
-              clientX,
-              clientY,
-              seq: Date.now() + Math.random(),
-            },
-          });
-          setActiveListItemId(it.id);
-          onSelectBlockRef.current(closestBlock.id);
-          return;
-        }
-      } else {
-        onSelectBlockRef.current(closestBlock.id);
-      }
-    }
+    window.getSelection()?.removeAllRanges();
   };
 
   // Activate an inactive block at the exact clicked character OR preserve a mouse drag selection (left->right or right->left)
@@ -2248,33 +2188,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       const finalX = upEvent.clientX;
       const finalY = upEvent.clientY;
 
-      // If the selection rectangle intersected a single editable paragraph or heading block,
-      // select the exact text covered by the rectangle inside that block!
-      if (latestHitIds.length === 1) {
-        const singleId = latestHitIds[0];
-        const singleBlock = blocksRef.current.find((b) => b.id === singleId);
-        if (
-          singleBlock &&
-          (singleBlock.type === 'paragraph' || singleBlock.type === 'heading')
-        ) {
-          setSelectedBlockIds([]);
-          setInitialBlockSelection(null);
-          setPendingMousePoint({
-            blockId: singleId,
-            point: {
-              clientX: finalAnchorX,
-              clientY: finalAnchorY,
-              endX: finalX,
-              endY: finalY,
-              seq: Date.now() + Math.random(),
-            },
-          });
-          onSelectBlockRef.current(singleId);
-          return;
-        }
-      }
-
-      // Otherwise keep all intersected blocks selected (for multi-block Copy, Cut, Delete, or Context Menu)
+      // Keep all intersected blocks selected (for multi-block Copy, Cut, Delete, or Context Menu)
       setSelectedBlockIds(latestHitIds);
     };
 
