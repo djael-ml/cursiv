@@ -9,10 +9,19 @@ import {
   GripVertical,
   Info,
   Lightbulb,
+  ArrowDown,
+  ArrowUp,
+  CheckCheck,
+  Copy,
   List,
   ListChecks,
   ListOrdered,
+  MoreHorizontal,
+  Plus,
+  Scissors,
   Square,
+  Trash2,
+  X,
 } from 'lucide-react';
 import {
   CalloutKind,
@@ -142,6 +151,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   const mouseDownCoordsRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const justFinishedLassoRef = useRef<boolean>(false);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+  const [activeListItemId, setActiveListItemId] = useState<string | null>(null);
+  const [activeCalloutField, setActiveCalloutField] = useState<'title' | 'content'>('content');
   const [collapsedHeadings, setCollapsedHeadings] = useState<Set<string>>(new Set());
   const [draggedBlockId, setDraggedBlockId] = useState<string | null>(null);
   const [dragOverBlockId, setDragOverBlockId] = useState<string | null>(null);
@@ -229,6 +240,68 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       }
     };
   }, []);
+
+  // Move one or multiple blocks up (-1) or down (+1)
+  const handleMoveBlocks = (targetIds: string[], direction: -1 | 1) => {
+    if (targetIds.length === 0) return;
+    const idSet = new Set(targetIds);
+    const copy = [...blocks];
+    if (direction === -1) {
+      for (let i = 1; i < copy.length; i++) {
+        if (idSet.has(copy[i].id) && !idSet.has(copy[i - 1].id)) {
+          const tmp = copy[i - 1];
+          copy[i - 1] = copy[i];
+          copy[i] = tmp;
+        }
+      }
+    } else {
+      for (let i = copy.length - 2; i >= 0; i--) {
+        if (idSet.has(copy[i].id) && !idSet.has(copy[i + 1].id)) {
+          const tmp = copy[i + 1];
+          copy[i + 1] = copy[i];
+          copy[i] = tmp;
+        }
+      }
+    }
+    onChangeBlocks(copy);
+  };
+
+  // Global Alt+ArrowUp / Alt+ArrowDown (move block) and Ctrl+D (duplicate block) shortcuts
+  useEffect(() => {
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        const activeBlock = blocksRef.current.find((b) => b.id === activeBlockId);
+        // Lists and Tables handle Alt+ArrowUp/Down internally to reorder items/rows
+        if (activeBlock && (activeBlock.type === 'list' || activeBlock.type === 'table')) {
+          return;
+        }
+        const targets =
+          selectedBlockIds.length > 0
+            ? selectedBlockIds
+            : activeBlockId
+            ? [activeBlockId]
+            : [];
+        if (targets.length > 0) {
+          e.preventDefault();
+          handleMoveBlocks(targets, e.key === 'ArrowUp' ? -1 : 1);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'd') {
+        const targets =
+          selectedBlockIds.length > 0
+            ? selectedBlockIds
+            : activeBlockId
+            ? [activeBlockId]
+            : [];
+        if (targets.length > 0) {
+          e.preventDefault();
+          handleDuplicateSelectedBlocks();
+        }
+      }
+    };
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBlockId, selectedBlockIds, blocks]);
 
   // Notion-style Multi-Block Lasso Selection Keyboard Actions (Delete, Copy, Cut, Escape)
   useEffect(() => {
@@ -1573,6 +1646,130 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         onInsertBlock={handleInsertBlockToolbar}
       />
 
+      {/* Floating Multi-Block Selection Action Bar (appears when selecting blocks with rectangle or handle) */}
+      {selectedBlockIds.length > 0 && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className="no-print no-export cursiv-popup-anim cursiv-glass-toolbar fixed bottom-12 left-1/2 -translate-x-1/2 z-50 flex flex-wrap items-center gap-1.5 px-3 py-1.5 rounded-xl shadow-2xl border text-xs"
+          style={{
+            borderColor: 'var(--border-color)',
+            color: 'var(--text-color)',
+          }}
+        >
+          <span
+            className="font-semibold px-2 py-0.5 rounded-md mr-1"
+            style={{
+              backgroundColor: 'color-mix(in srgb, var(--primary-color) 16%, transparent)',
+              color: 'var(--primary-color)',
+            }}
+          >
+            {selectedBlockIds.length} bloc{selectedBlockIds.length > 1 ? 's' : ''} sélectionné{selectedBlockIds.length > 1 ? 's' : ''}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => handleMoveBlocks(selectedBlockIds, -1)}
+            className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer"
+            title="Monter la sélection (Alt+↑)"
+          >
+            <ArrowUp className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => handleMoveBlocks(selectedBlockIds, 1)}
+            className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer"
+            title="Descendre la sélection (Alt+↓)"
+          >
+            <ArrowDown className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="h-3.5 w-px mx-0.5" style={{ backgroundColor: 'var(--border-color)' }} />
+
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val) {
+                handleConvertBlockType(val as Parameters<typeof handleConvertBlockType>[0]);
+                e.target.value = '';
+              }
+            }}
+            className="px-1.5 py-0.5 rounded border text-xs bg-transparent cursor-pointer"
+            style={{ borderColor: 'var(--border-color)', color: 'var(--text-color)' }}
+            title="Convertir les blocs sélectionnés en..."
+          >
+            <option value="" disabled>
+              Convertir en...
+            </option>
+            <option value="paragraph">Paragraphe</option>
+            <option value="h1">Titre H1</option>
+            <option value="h2">Titre H2</option>
+            <option value="h3">Titre H3</option>
+            <option value="bullet-list">Liste à puces</option>
+            <option value="ordered-list">Liste numérotée</option>
+            <option value="task-list">Liste de tâches</option>
+            <option value="blockquote">Citation</option>
+            <option value="callout">Alerte Callout</option>
+            <option value="code">Bloc de code</option>
+          </select>
+
+          <div className="h-3.5 w-px mx-0.5" style={{ backgroundColor: 'var(--border-color)' }} />
+
+          <button
+            type="button"
+            onClick={() => {
+              const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
+              navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer"
+            title="Copier le Markdown (Ctrl+C)"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>Copier</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
+              navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+              handleDeleteSelectedBlocks();
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer"
+            title="Couper (Ctrl+X)"
+          >
+            <Scissors className="w-3.5 h-3.5" />
+            <span>Couper</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleDuplicateSelectedBlocks}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer"
+            title="Dupliquer (Ctrl+D)"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Dupliquer</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteSelectedBlocks}
+            className="flex items-center gap-1 px-2 py-1 rounded text-red-500 hover:bg-red-500/10 cursor-pointer"
+            title="Supprimer (Suppr / Backspace)"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Supprimer</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedBlockIds([])}
+            className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 cursor-pointer opacity-70 hover:opacity-100"
+            title="Désélectionner (Échap)"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Notion-style Marquee / Lasso Selection Rectangle */}
       {lassoBox && (
         <div
@@ -1812,6 +2009,115 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                 >
                   <GripVertical className="w-3.5 h-3.5" />
                 </button>
+
+                {/* Right Hover Quick-Action Pill for instant element manipulation */}
+                <div
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="no-print no-export opacity-0 group-hover/block:opacity-85 hover:!opacity-100 absolute -top-3 right-1 z-30 hidden sm:flex items-center gap-0.5 px-1 py-0.5 rounded-md border shadow-sm transition-opacity text-[11px]"
+                  style={{
+                    backgroundColor: 'var(--bg-color)',
+                    borderColor: 'var(--border-color)',
+                    color: 'var(--meta-content-color)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveBlocks([block.id], -1);
+                    }}
+                    className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 cursor-pointer"
+                    title="Monter ce bloc (Alt+↑)"
+                  >
+                    <ArrowUp className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveBlocks([block.id], 1);
+                    }}
+                    className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 cursor-pointer"
+                    title="Descendre ce bloc (Alt+↓)"
+                  >
+                    <ArrowDown className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const idx = blocks.findIndex((b) => b.id === block.id);
+                      if (idx !== -1) {
+                        const copy = [...blocks];
+                        const cloned = { ...block, id: nextBlockId(block.type) };
+                        copy.splice(idx + 1, 0, cloned);
+                        onChangeBlocks(copy);
+                        onSelectBlock(cloned.id, 0);
+                      }
+                    }}
+                    className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 cursor-pointer"
+                    title="Dupliquer ce bloc (Ctrl+D)"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const idx = blocks.findIndex((b) => b.id === block.id);
+                      const newId = nextBlockId('p');
+                      const copy = [...blocks];
+                      copy.splice(idx + 1, 0, { id: newId, type: 'paragraph', text: '' });
+                      onChangeBlocks(copy);
+                      setCursorOffset(0, true);
+                      onSelectBlock(newId, 0);
+                    }}
+                    className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 cursor-pointer"
+                    title="Insérer un paragraphe en dessous"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const remaining = blocks.filter((b) => b.id !== block.id);
+                      const finalBlocks: MarkdownBlock[] =
+                        remaining.length > 0
+                          ? remaining
+                          : [{ id: nextBlockId('p'), type: 'paragraph', text: '' }];
+                      onChangeBlocks(finalBlocks);
+                      onSelectBlock(finalBlocks[0].id, 0);
+                    }}
+                    className="p-0.5 rounded text-red-500 hover:bg-red-500/10 cursor-pointer"
+                    title="Supprimer ce bloc"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedBlockIds([block.id]);
+                      setContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        targetBlockId: block.id,
+                        selectedBlockCount: 1,
+                      });
+                    }}
+                    className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 cursor-pointer"
+                    title="Plus d'options & Convertir..."
+                  >
+                    <MoreHorizontal className="w-3 h-3" />
+                  </button>
+                </div>
               {/* Slash Command Menu (`/title`, `/h1`, `/table`, `/code`, `/math`, etc.) */}
               {slashPopup && slashPopup.blockId === block.id && (
                 <SlashCommandMenu
@@ -1891,42 +2197,56 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
               {/* 1. YAML Front Matter */}
               {block.type === 'yaml' && (
                 <div
-                  className="my-4 p-3 rounded-lg border font-mono text-xs"
+                  className="my-4 p-3 rounded-lg border font-mono text-xs cursor-text"
                   style={{
                     backgroundColor: 'var(--code-bg-color)',
                     borderColor: 'var(--border-color)',
                     color: 'var(--meta-content-color)',
                   }}
-                  onClick={() => onSelectBlock(block.id)}
+                  onMouseDown={(e) => activateBlockFromMouse(e, block.id, block.raw)}
                 >
-                  <div className="flex items-center justify-between mb-1 opacity-70">
+                  <div className="flex items-center justify-between mb-1 opacity-70 select-none">
                     <span>--- YAML Front Matter</span>
                     <span> métadonnées & surcharge export ---</span>
                   </div>
                   {isActive ? (
-                    <textarea
-                      autoFocus
+                    <InlinePageInput
                       value={block.raw}
-                      onChange={(e) =>
-                        updateSingleBlock(block.id, () => ({ ...block, raw: e.target.value }))
+                      multiline={true}
+                      autoFocus
+                      initialCaretOffset={cursorOffset}
+                      pendingMouseDownPoint={
+                        pendingMousePoint?.blockId === block.id
+                          ? pendingMousePoint.point
+                          : null
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') {
-                          e.preventDefault();
-                          const el = e.currentTarget;
-                          const s = el.selectionStart ?? 0;
-                          const end = el.selectionEnd ?? 0;
-                          const nextVal = block.raw.slice(0, s) + '\t' + block.raw.slice(end);
-                          updateSingleBlock(block.id, () => ({ ...block, raw: nextVal }));
-                          requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
-                        }
+                      externalCaretVersion={caretVersion}
+                      motionBlur={preferences.caretMotionBlur}
+                      smartTypography={false}
+                      placeholder="title: Document\nauthor: Djaël Mola"
+                      style={{ color: 'var(--text-color)' }}
+                      onCursorChange={(caret) => setCursorOffset(caret)}
+                      onChange={(val, caret) => {
+                        setCursorOffset(caret);
+                        updateSingleBlock(block.id, () => ({ ...block, raw: val }));
                       }}
-                      rows={Math.max(2, block.raw.split('\n').length)}
-                      className="w-full bg-transparent outline-none resize-y font-mono text-xs"
-                      style={{ color: 'var(--text-color)', tabSize: 4 }}
+                      onKeyDown={(e, setProgrammaticSelection) =>
+                        handleSmartKeyDown(
+                          e,
+                          block,
+                          block.raw,
+                          (nextText, nextPos) => {
+                            updateSingleBlock(block.id, () => ({ ...block, raw: nextText }));
+                            setCursorOffset(nextPos);
+                          },
+                          setProgrammaticSelection
+                        )
+                      }
                     />
                   ) : (
-                    <pre className="whitespace-pre-wrap m-0" style={{ tabSize: 4 }}>{block.raw}</pre>
+                    <pre className="whitespace-pre-wrap m-0" style={{ tabSize: 4, color: 'var(--text-color)' }}>
+                      {block.raw}
+                    </pre>
                   )}
                 </div>
               )}
@@ -2192,207 +2512,599 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                 </div>
               )}
 
-              {/* 5. Lists: Ordered, Unordered, GFM Interactive Task Lists (`- [ ]` / `- [x]`) */}
-              {block.type === 'list' && (
-                <div className="my-4" onClick={() => onSelectBlock(block.id)}>
-                  {isActive && (
-                    <div
-                      className="no-export cursiv-popup-anim inline-flex items-center gap-1 px-2 py-1 mb-1.5 rounded-md border text-xs"
-                      style={{
-                        backgroundColor: 'var(--code-bg-color)',
-                        borderColor: 'var(--border-color)',
-                        color: 'var(--meta-content-color)',
-                      }}
-                    >
-                      <span className="mr-1">Convertir liste :</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSingleBlock(block.id, () => ({ ...block, listType: 'bullet' }))
-                        }
-                        className={`p-1 rounded cursor-pointer ${
-                          block.listType === 'bullet' ? 'text-blue-500 bg-blue-500/10' : ''
-                        }`}
-                        title="Liste à puces"
-                      >
-                        <List className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSingleBlock(block.id, () => ({ ...block, listType: 'ordered' }))
-                        }
-                        className={`p-1 rounded cursor-pointer ${
-                          block.listType === 'ordered' ? 'text-blue-500 bg-blue-500/10' : ''
-                        }`}
-                        title="Liste numérotée"
-                      >
-                        <ListOrdered className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSingleBlock(block.id, () => ({ ...block, listType: 'task' }))
-                        }
-                        className={`p-1 rounded cursor-pointer ${
-                          block.listType === 'task' ? 'text-blue-500 bg-blue-500/10' : ''
-                        }`}
-                        title="Task List GFM (- [ ])"
-                      >
-                        <ListChecks className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
+              {/* 5. Lists: Ordered, Unordered, GFM Interactive Task Lists (`- [ ]` / `- [x]`) with Smooth Gliding Caret */}
+              {block.type === 'list' &&
+                (() => {
+                  const totalTasks = block.items.length;
+                  const completedTasks =
+                    block.listType === 'task'
+                      ? block.items.filter((it) => it.checked).length
+                      : 0;
+                  const taskPercent =
+                    totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-                  <ul className="space-y-1.5">
-                    {block.items.map((item, itemIdx) => (
-                      <li
-                        key={item.id}
-                        style={{ paddingLeft: `${item.indent * 1.5}rem` }}
-                        className="flex items-start gap-2.5 leading-relaxed"
-                      >
-                        {block.listType === 'task' ? (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const nextItems = block.items.map((it, i) =>
-                                i === itemIdx ? { ...it, checked: !it.checked } : it
-                              );
-                              updateSingleBlock(block.id, () => ({ ...block, items: nextItems }));
-                            }}
-                            className="mt-1 cursor-pointer shrink-0 transition-transform active:scale-90"
-                            style={{ color: item.checked ? 'var(--primary-color)' : 'var(--md-char-color)' }}
-                          >
-                            {item.checked ? (
-                              <CheckSquare className="w-4 h-4" />
-                            ) : (
-                              <Square className="w-4 h-4" />
-                            )}
-                          </button>
-                        ) : block.listType === 'ordered' ? (
-                          <span
-                            className="font-mono text-sm mt-0.5 shrink-0 select-none"
-                            style={{ color: 'var(--meta-content-color)' }}
-                          >
-                            {itemIdx + 1}.
-                          </span>
-                        ) : (
-                          <span
-                            className="mt-2 w-1.5 h-1.5 rounded-full shrink-0"
-                            style={{ backgroundColor: 'var(--meta-content-color)' }}
-                          />
-                        )}
+                  // Compute hierarchical numbering (1. -> a. -> i.) per indentation level
+                  const orderedCounters = [0, 0, 0, 0, 0, 0, 0];
+                  const toRoman = (n: number): string => {
+                    const romans: Array<[number, string]> = [
+                      [10, 'x'],
+                      [9, 'ix'],
+                      [5, 'v'],
+                      [4, 'iv'],
+                      [1, 'i'],
+                    ];
+                    let rem = Math.max(1, n);
+                    let out = '';
+                    for (const [val, sym] of romans) {
+                      while (rem >= val) {
+                        out += sym;
+                        rem -= val;
+                      }
+                    }
+                    return out;
+                  };
 
-                        {isActive ? (
-                          <input
-                            type="text"
-                            value={item.text}
-                            onChange={(e) => {
-                              const nextItems = block.items.map((it, i) =>
-                                i === itemIdx ? { ...it, text: e.target.value } : it
-                              );
-                              updateSingleBlock(block.id, () => ({ ...block, items: nextItems }));
-                            }}
-                            onKeyDown={(e) => {
-                              // Tab & Shift+Tab natural indentation
-                              if (e.key === 'Tab') {
-                                e.preventDefault();
-                                const delta = e.shiftKey ? -1 : 1;
-                                const nextItems = block.items.map((it, i) =>
-                                  i === itemIdx
-                                    ? { ...it, indent: Math.max(0, Math.min(6, it.indent + delta)) }
-                                    : it
-                                );
+                  const effectiveActiveItemId =
+                    activeListItemId && block.items.some((it) => it.id === activeListItemId)
+                      ? activeListItemId
+                      : block.items[0]?.id ?? null;
+
+                  return (
+                    <div className="my-4">
+                      {/* List Toolbar + Task Progress Indicator */}
+                      {(isActive || block.listType === 'task') && (
+                        <div
+                          className="no-print no-export cursiv-popup-anim flex flex-wrap items-center justify-between gap-2 px-2.5 py-1 mb-2 rounded-lg border text-xs"
+                          style={{
+                            backgroundColor: 'var(--code-bg-color)',
+                            borderColor: 'var(--border-color)',
+                            color: 'var(--meta-content-color)',
+                          }}
+                        >
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="mr-1 font-medium">Liste :</span>
+                            <button
+                              type="button"
+                              onClick={() =>
                                 updateSingleBlock(block.id, () => ({
                                   ...block,
-                                  items: nextItems,
+                                  listType: 'bullet',
+                                }))
+                              }
+                              className={`p-1 rounded cursor-pointer ${
+                                block.listType === 'bullet'
+                                  ? 'text-[var(--primary-color)] bg-blue-500/10'
+                                  : 'hover:bg-black/8'
+                              }`}
+                              title="Liste à puces hiérarchique"
+                            >
+                              <List className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSingleBlock(block.id, () => ({
+                                  ...block,
+                                  listType: 'ordered',
+                                }))
+                              }
+                              className={`p-1 rounded cursor-pointer ${
+                                block.listType === 'ordered'
+                                  ? 'text-[var(--primary-color)] bg-blue-500/10'
+                                  : 'hover:bg-black/8'
+                              }`}
+                              title="Liste numérotée (1. / a. / i.)"
+                            >
+                              <ListOrdered className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSingleBlock(block.id, () => ({
+                                  ...block,
+                                  listType: 'task',
+                                }))
+                              }
+                              className={`p-1 rounded cursor-pointer ${
+                                block.listType === 'task'
+                                  ? 'text-[var(--primary-color)] bg-blue-500/10'
+                                  : 'hover:bg-black/8'
+                              }`}
+                              title="Liste de tâches interactive (- [ ])"
+                            >
+                              <ListChecks className="w-3.5 h-3.5" />
+                            </button>
+
+                            <div
+                              className="h-3.5 w-px mx-1"
+                              style={{ backgroundColor: 'var(--border-color)' }}
+                            />
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newId = nextBlockId('li');
+                                const lastIndent =
+                                  block.items[block.items.length - 1]?.indent ?? 0;
+                                updateSingleBlock(block.id, () => ({
+                                  ...block,
+                                  items: [
+                                    ...block.items,
+                                    { id: newId, indent: lastIndent, text: '', checked: false },
+                                  ],
                                 }));
-                              } else if (e.key === 'Enter') {
-                                e.preventDefault();
-                                // Pressing Enter on an empty list item exits the list into a new paragraph below
-                                if (item.text.trim() === '') {
-                                  const remainingItems = block.items.filter((_, i) => i !== itemIdx);
-                                  const newParaId = nextBlockId('p');
-                                  const bIdx = blocks.findIndex((b) => b.id === block.id);
-                                  const copy = [...blocks];
-                                  if (remainingItems.length === 0) {
-                                    copy[bIdx] = { id: newParaId, type: 'paragraph', text: '' };
-                                  } else {
-                                    copy[bIdx] = { ...block, items: remainingItems };
-                                    copy.splice(bIdx + 1, 0, {
-                                      id: newParaId,
-                                      type: 'paragraph',
-                                      text: '',
-                                    });
-                                  }
-                                  onChangeBlocks(copy);
-                                  setCursorOffset(0);
-                                  onSelectBlock(newParaId, 0);
+                                setActiveListItemId(newId);
+                                setCursorOffset(0, true);
+                                onSelectBlock(block.id, 0);
+                              }}
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-black/8 cursor-pointer"
+                              title="Ajouter un élément (Entrée)"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Élément</span>
+                            </button>
+
+                            {block.listType === 'task' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allChecked = block.items.every((it) => it.checked);
+                                    updateSingleBlock(block.id, () => ({
+                                      ...block,
+                                      items: block.items.map((it) => ({
+                                        ...it,
+                                        checked: !allChecked,
+                                      })),
+                                    }));
+                                  }}
+                                  className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-black/8 cursor-pointer"
+                                  title="Tout cocher / Tout décocher"
+                                >
+                                  <CheckCheck className="w-3.5 h-3.5" />
+                                  <span>
+                                    {block.items.every((it) => it.checked)
+                                      ? 'Tout décocher'
+                                      : 'Tout cocher'}
+                                  </span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+
+                          {block.listType === 'task' && (
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-[11px]">
+                                {completedTasks}/{totalTasks} ({taskPercent}%)
+                              </span>
+                              <div
+                                className="w-20 h-1.5 rounded-full overflow-hidden"
+                                style={{ backgroundColor: 'var(--border-color)' }}
+                              >
+                                <div
+                                  className="h-full transition-all duration-200 rounded-full"
+                                  style={{
+                                    width: `${taskPercent}%`,
+                                    backgroundColor: 'var(--primary-color)',
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <ul className="space-y-1.5">
+                        {block.items.map((item, itemIdx) => {
+                          const lvl = Math.max(0, Math.min(6, item.indent));
+                          orderedCounters[lvl] += 1;
+                          for (let k = lvl + 1; k < orderedCounters.length; k++) {
+                            orderedCounters[k] = 0;
+                          }
+                          const countVal = orderedCounters[lvl];
+                          const orderedLabel =
+                            lvl % 3 === 0
+                              ? `${countVal}.`
+                              : lvl % 3 === 1
+                              ? `${String.fromCharCode(96 + ((countVal - 1) % 26) + 1)}.`
+                              : `${toRoman(countVal)}.`;
+                          const bulletChar = lvl === 0 ? '•' : lvl === 1 ? '◦' : '▪';
+
+                          const isItemActive = isActive && effectiveActiveItemId === item.id;
+                          const itemPointKey = `${block.id}:${item.id}`;
+
+                          return (
+                            <li
+                              key={item.id}
+                              style={{ paddingLeft: `${item.indent * 1.5}rem` }}
+                              className="flex items-baseline gap-2.5 leading-relaxed cursor-text group/listitem"
+                              onMouseDown={(e) => {
+                                if (e.button !== 0) return;
+                                const target = e.target as HTMLElement;
+                                if (target.closest('button, a, input, textarea')) {
+                                  mouseDownInsideBlockRef.current = true;
+                                  mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
                                   return;
                                 }
-                                const nextItems = [...block.items];
-                                nextItems.splice(itemIdx + 1, 0, {
-                                  id: nextBlockId('li'),
-                                  indent: item.indent,
-                                  text: '',
-                                  checked: false,
-                                });
-                                updateSingleBlock(block.id, () => ({
-                                  ...block,
-                                  items: nextItems,
-                                }));
-                              } else if (
-                                e.key === 'Backspace' &&
-                                item.text === ''
-                              ) {
                                 e.preventDefault();
-                                if (block.items.length > 1) {
-                                  const nextItems = block.items.filter((_, i) => i !== itemIdx);
-                                  updateSingleBlock(block.id, () => ({
-                                    ...block,
-                                    items: nextItems,
-                                  }));
-                                } else {
-                                  // Convert single empty list item back to a normal paragraph
-                                  updateSingleBlock(block.id, () => ({
-                                    id: block.id,
-                                    type: 'paragraph',
-                                    text: '',
-                                  }));
-                                  setCursorOffset(0);
-                                  onSelectBlock(block.id, 0);
-                                }
-                              }
-                            }}
-                            className={`w-full bg-transparent outline-none ${
-                              item.checked ? 'line-through opacity-60' : ''
-                            }`}
-                          />
-                        ) : (
-                          <div className={item.checked ? 'line-through opacity-60' : ''}>
-                            <LiveInlineTokens
-                              text={item.text}
-                              isBlockActive={false}
-                              cursorOffset={null}
-                              mathEnv={mathEnv}
-                              footnotesMap={footnotesMap}
-                              pandocMathRules={preferences.inlineMathPandocRules}
-                              onNavigateAnchor={navigateAnchorOrUrl}
-                            />
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                                mouseDownInsideBlockRef.current = true;
+                                mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+                                setSelectedBlockIds([]);
+                                setActiveListItemId(item.id);
+                                setPendingMousePoint({
+                                  blockId: itemPointKey,
+                                  point: {
+                                    clientX: e.clientX,
+                                    clientY: e.clientY,
+                                    seq: Date.now() + Math.random(),
+                                  },
+                                });
+                                onSelectBlock(block.id);
+                              }}
+                            >
+                              {block.listType === 'task' ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const nextItems = block.items.map((it, i) =>
+                                      i === itemIdx ? { ...it, checked: !it.checked } : it
+                                    );
+                                    updateSingleBlock(block.id, () => ({
+                                      ...block,
+                                      items: nextItems,
+                                    }));
+                                  }}
+                                  className="translate-y-0.5 cursor-pointer shrink-0 transition-transform active:scale-90"
+                                  style={{
+                                    color: item.checked
+                                      ? 'var(--primary-color)'
+                                      : 'var(--md-char-color)',
+                                  }}
+                                  title="Cocher / Décocher (Ctrl+Entrée)"
+                                >
+                                  {item.checked ? (
+                                    <CheckSquare className="w-4 h-4" />
+                                  ) : (
+                                    <Square className="w-4 h-4" />
+                                  )}
+                                </button>
+                              ) : block.listType === 'ordered' ? (
+                                <span
+                                  className="font-mono text-sm shrink-0 select-none min-w-[1.4rem] text-right"
+                                  style={{ color: 'var(--meta-content-color)' }}
+                                >
+                                  {orderedLabel}
+                                </span>
+                              ) : (
+                                <span
+                                  className="text-base leading-none shrink-0 select-none w-3.5 text-center"
+                                  style={{ color: 'var(--meta-content-color)' }}
+                                >
+                                  {bulletChar}
+                                </span>
+                              )}
 
-              {/* 6. GitHub Alerts / Callouts (`> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`) */}
+                              {isItemActive ? (
+                                <InlinePageInput
+                                  value={item.text}
+                                  multiline={true}
+                                  autoFocus
+                                  initialCaretOffset={cursorOffset}
+                                  pendingMouseDownPoint={
+                                    pendingMousePoint?.blockId === itemPointKey
+                                      ? pendingMousePoint.point
+                                      : null
+                                  }
+                                  externalCaretVersion={caretVersion}
+                                  motionBlur={preferences.caretMotionBlur}
+                                  smartTypography={preferences.smartTypography}
+                                  placeholder="Élément de liste (Tab pour indenter, Entrée sur vide pour sortir)..."
+                                  className={`flex-1 ${
+                                    item.checked ? 'line-through opacity-60' : ''
+                                  }`}
+                                  onCursorChange={(caret) => setCursorOffset(caret)}
+                                  onChange={(val, caret) => {
+                                    setCursorOffset(caret);
+                                    const nextItems = block.items.map((it, i) =>
+                                      i === itemIdx ? { ...it, text: val } : it
+                                    );
+                                    updateSingleBlock(block.id, () => ({
+                                      ...block,
+                                      items: nextItems,
+                                    }));
+                                  }}
+                                  onKeyDown={(e, setProgrammaticSelection) => {
+                                    const el = e.currentTarget;
+                                    const selStart = el.selectionStart ?? 0;
+                                    const selEnd = el.selectionEnd ?? 0;
+
+                                    // Ctrl+Enter toggles task checkbox
+                                    if (
+                                      (e.ctrlKey || e.metaKey) &&
+                                      e.key === 'Enter' &&
+                                      block.listType === 'task'
+                                    ) {
+                                      e.preventDefault();
+                                      const nextItems = block.items.map((it, i) =>
+                                        i === itemIdx ? { ...it, checked: !it.checked } : it
+                                      );
+                                      updateSingleBlock(block.id, () => ({
+                                        ...block,
+                                        items: nextItems,
+                                      }));
+                                      return;
+                                    }
+
+                                    // Tab / Shift+Tab indents or un-indents list item
+                                    if (e.key === 'Tab') {
+                                      e.preventDefault();
+                                      const delta = e.shiftKey ? -1 : 1;
+                                      const nextItems = block.items.map((it, i) =>
+                                        i === itemIdx
+                                          ? {
+                                              ...it,
+                                              indent: Math.max(0, Math.min(6, it.indent + delta)),
+                                            }
+                                          : it
+                                      );
+                                      updateSingleBlock(block.id, () => ({
+                                        ...block,
+                                        items: nextItems,
+                                      }));
+                                      return;
+                                    }
+
+                                    // Alt+ArrowUp / Alt+ArrowDown reorders list item
+                                    if (
+                                      e.altKey &&
+                                      (e.key === 'ArrowUp' || e.key === 'ArrowDown')
+                                    ) {
+                                      e.preventDefault();
+                                      const targetIdx =
+                                        e.key === 'ArrowUp' ? itemIdx - 1 : itemIdx + 1;
+                                      if (targetIdx >= 0 && targetIdx < block.items.length) {
+                                        const nextItems = [...block.items];
+                                        const [moved] = nextItems.splice(itemIdx, 1);
+                                        nextItems.splice(targetIdx, 0, moved);
+                                        updateSingleBlock(block.id, () => ({
+                                          ...block,
+                                          items: nextItems,
+                                        }));
+                                      }
+                                      return;
+                                    }
+
+                                    // ArrowUp / ArrowDown navigates between list items or adjacent blocks
+                                    if (
+                                      e.key === 'ArrowUp' &&
+                                      !e.shiftKey &&
+                                      !e.ctrlKey &&
+                                      !e.metaKey &&
+                                      !e.altKey &&
+                                      selStart === selEnd
+                                    ) {
+                                      e.preventDefault();
+                                      if (itemIdx > 0) {
+                                        const prevItem = block.items[itemIdx - 1];
+                                        setActiveListItemId(prevItem.id);
+                                        setCursorOffset(
+                                          Math.min(selStart, prevItem.text.length),
+                                          true
+                                        );
+                                      } else {
+                                        const bIdx = blocks.findIndex((b) => b.id === block.id);
+                                        if (bIdx > 0) {
+                                          setCursorOffset(999999, true);
+                                          onSelectBlock(blocks[bIdx - 1].id, 999999);
+                                        }
+                                      }
+                                      return;
+                                    }
+
+                                    if (
+                                      e.key === 'ArrowDown' &&
+                                      !e.shiftKey &&
+                                      !e.ctrlKey &&
+                                      !e.metaKey &&
+                                      !e.altKey &&
+                                      selStart === selEnd
+                                    ) {
+                                      e.preventDefault();
+                                      if (itemIdx < block.items.length - 1) {
+                                        const nextItem = block.items[itemIdx + 1];
+                                        setActiveListItemId(nextItem.id);
+                                        setCursorOffset(
+                                          Math.min(selStart, nextItem.text.length),
+                                          true
+                                        );
+                                      } else {
+                                        const bIdx = blocks.findIndex((b) => b.id === block.id);
+                                        if (bIdx >= 0 && bIdx < blocks.length - 1) {
+                                          setCursorOffset(0, true);
+                                          onSelectBlock(blocks[bIdx + 1].id, 0);
+                                        }
+                                      }
+                                      return;
+                                    }
+
+                                    // Enter splits list item or exits list when empty
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                      e.preventDefault();
+                                      if (item.text.trim() === '') {
+                                        if (item.indent > 0) {
+                                          const nextItems = block.items.map((it, i) =>
+                                            i === itemIdx
+                                              ? { ...it, indent: Math.max(0, it.indent - 1) }
+                                              : it
+                                          );
+                                          updateSingleBlock(block.id, () => ({
+                                            ...block,
+                                            items: nextItems,
+                                          }));
+                                          return;
+                                        }
+                                        const remainingItems = block.items.filter(
+                                          (_, i) => i !== itemIdx
+                                        );
+                                        const newParaId = nextBlockId('p');
+                                        const bIdx = blocks.findIndex((b) => b.id === block.id);
+                                        const copy = [...blocks];
+                                        if (remainingItems.length === 0) {
+                                          copy[bIdx] = {
+                                            id: newParaId,
+                                            type: 'paragraph',
+                                            text: '',
+                                          };
+                                        } else {
+                                          copy[bIdx] = { ...block, items: remainingItems };
+                                          copy.splice(bIdx + 1, 0, {
+                                            id: newParaId,
+                                            type: 'paragraph',
+                                            text: '',
+                                          });
+                                        }
+                                        onChangeBlocks(copy);
+                                        setCursorOffset(0, true);
+                                        onSelectBlock(newParaId, 0);
+                                        return;
+                                      }
+
+                                      const before = item.text.slice(0, selStart);
+                                      const after = item.text.slice(selEnd);
+                                      const newItemId = nextBlockId('li');
+                                      const nextItems = [...block.items];
+                                      nextItems[itemIdx] = { ...item, text: before };
+                                      nextItems.splice(itemIdx + 1, 0, {
+                                        id: newItemId,
+                                        indent: item.indent,
+                                        text: after,
+                                        checked: false,
+                                      });
+                                      updateSingleBlock(block.id, () => ({
+                                        ...block,
+                                        items: nextItems,
+                                      }));
+                                      setActiveListItemId(newItemId);
+                                      setCursorOffset(0, true);
+                                      return;
+                                    }
+
+                                    // Backspace at offset 0 un-indents, merges with previous item, or converts to paragraph
+                                    if (
+                                      e.key === 'Backspace' &&
+                                      selStart === 0 &&
+                                      selEnd === 0
+                                    ) {
+                                      e.preventDefault();
+                                      if (item.indent > 0) {
+                                        const nextItems = block.items.map((it, i) =>
+                                          i === itemIdx
+                                            ? { ...it, indent: Math.max(0, it.indent - 1) }
+                                            : it
+                                        );
+                                        updateSingleBlock(block.id, () => ({
+                                          ...block,
+                                          items: nextItems,
+                                        }));
+                                        return;
+                                      }
+                                      if (itemIdx > 0) {
+                                        const prevItem = block.items[itemIdx - 1];
+                                        const mergePos = prevItem.text.length;
+                                        const nextItems = block.items
+                                          .map((it, i) =>
+                                            i === itemIdx - 1
+                                              ? { ...it, text: prevItem.text + item.text }
+                                              : it
+                                          )
+                                          .filter((_, i) => i !== itemIdx);
+                                        updateSingleBlock(block.id, () => ({
+                                          ...block,
+                                          items: nextItems,
+                                        }));
+                                        setActiveListItemId(prevItem.id);
+                                        setCursorOffset(mergePos, true);
+                                        return;
+                                      }
+                                      // First item at indent 0 -> convert to paragraph above remaining list
+                                      const bIdx = blocks.findIndex((b) => b.id === block.id);
+                                      const newParaId = nextBlockId('p');
+                                      const copy = [...blocks];
+                                      if (block.items.length === 1) {
+                                        copy[bIdx] = {
+                                          id: newParaId,
+                                          type: 'paragraph',
+                                          text: item.text,
+                                        };
+                                      } else {
+                                        copy[bIdx] = {
+                                          ...block,
+                                          items: block.items.slice(1),
+                                        };
+                                        copy.splice(bIdx, 0, {
+                                          id: newParaId,
+                                          type: 'paragraph',
+                                          text: item.text,
+                                        });
+                                      }
+                                      onChangeBlocks(copy);
+                                      setCursorOffset(0, true);
+                                      onSelectBlock(newParaId, 0);
+                                      return;
+                                    }
+
+                                    // Delegate inline formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+K, Auto-Pair)
+                                    handleSmartKeyDown(
+                                      e,
+                                      block,
+                                      item.text,
+                                      (nextText, nextPos) => {
+                                        const nextItems = block.items.map((it, i) =>
+                                          i === itemIdx ? { ...it, text: nextText } : it
+                                        );
+                                        updateSingleBlock(block.id, () => ({
+                                          ...block,
+                                          items: nextItems,
+                                        }));
+                                        setCursorOffset(nextPos);
+                                      },
+                                      setProgrammaticSelection
+                                    );
+                                  }}
+                                />
+                              ) : (
+                                <div
+                                  className={`flex-1 min-h-[1.5rem] ${
+                                    item.checked ? 'line-through opacity-60' : ''
+                                  }`}
+                                >
+                                  <LiveInlineTokens
+                                    text={item.text}
+                                    isBlockActive={false}
+                                    cursorOffset={null}
+                                    mathEnv={mathEnv}
+                                    footnotesMap={footnotesMap}
+                                    pandocMathRules={preferences.inlineMathPandocRules}
+                                    onNavigateAnchor={navigateAnchorOrUrl}
+                                  />
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  );
+                })()}
+
+              {/* 6. GitHub Alerts / Callouts (`> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`) with Smooth Gliding Caret */}
               {block.type === 'callout' &&
                 (() => {
                   const cfg = CALLOUT_STYLES[block.calloutType] || CALLOUT_STYLES.NOTE;
                   const kinds: CalloutKind[] = ['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION'];
+                  const titlePointKey = `${block.id}:title`;
+                  const contentPointKey = `${block.id}:content`;
 
                   return (
                     <div
@@ -2401,22 +3113,63 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                         borderLeftColor: cfg.color,
                         backgroundColor: cfg.bg,
                       }}
-                      onClick={() => onSelectBlock(block.id)}
                     >
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2 font-semibold text-sm" style={{ color: cfg.color }}>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                        <div
+                          className="flex flex-1 items-center gap-2 font-semibold text-sm cursor-text"
+                          style={{ color: cfg.color }}
+                          onMouseDown={(e) => {
+                            if (e.button !== 0) return;
+                            const target = e.target as HTMLElement;
+                            if (target.closest('button, a, textarea, input')) return;
+                            e.preventDefault();
+                            mouseDownInsideBlockRef.current = true;
+                            mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+                            setSelectedBlockIds([]);
+                            setActiveCalloutField('title');
+                            setPendingMousePoint({
+                              blockId: titlePointKey,
+                              point: {
+                                clientX: e.clientX,
+                                clientY: e.clientY,
+                                seq: Date.now() + Math.random(),
+                              },
+                            });
+                            onSelectBlock(block.id);
+                          }}
+                        >
                           {cfg.icon}
-                          {isActive ? (
-                            <input
-                              type="text"
+                          {isActive && activeCalloutField === 'title' ? (
+                            <InlinePageInput
                               value={block.title}
-                              onChange={(e) =>
+                              multiline={false}
+                              autoFocus
+                              initialCaretOffset={cursorOffset}
+                              pendingMouseDownPoint={
+                                pendingMousePoint?.blockId === titlePointKey
+                                  ? pendingMousePoint.point
+                                  : null
+                              }
+                              externalCaretVersion={caretVersion}
+                              motionBlur={preferences.caretMotionBlur}
+                              smartTypography={preferences.smartTypography}
+                              placeholder={cfg.label}
+                              className="flex-1 font-semibold"
+                              onCursorChange={(caret) => setCursorOffset(caret)}
+                              onChange={(val, caret) => {
+                                setCursorOffset(caret);
                                 updateSingleBlock(block.id, () => ({
                                   ...block,
-                                  title: e.target.value,
-                                }))
-                              }
-                              className="bg-transparent outline-none font-semibold"
+                                  title: val,
+                                }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                                  e.preventDefault();
+                                  setActiveCalloutField('content');
+                                  setCursorOffset(0, true);
+                                }
+                              }}
                             />
                           ) : (
                             <span>{block.title || cfg.label}</span>
@@ -2424,7 +3177,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                         </div>
 
                         {isActive && (
-                          <div className="no-export flex items-center gap-1">
+                          <div className="no-print no-export flex items-center gap-1">
                             {kinds.map((k) => (
                               <button
                                 key={k}
@@ -2448,32 +3201,82 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                         )}
                       </div>
 
-                      {isActive ? (
-                        <textarea
-                          value={block.content}
-                          onChange={(e) =>
-                            updateSingleBlock(block.id, () => ({
-                              ...block,
-                              content: e.target.value,
-                            }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Tab') {
-                              e.preventDefault();
-                              const el = e.currentTarget;
-                              const s = el.selectionStart ?? 0;
-                              const end = el.selectionEnd ?? 0;
-                              const nextVal = block.content.slice(0, s) + '\t' + block.content.slice(end);
-                              updateSingleBlock(block.id, () => ({ ...block, content: nextVal }));
-                              requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
+                      <div
+                        className="text-sm leading-relaxed cursor-text"
+                        style={{ tabSize: 4 }}
+                        onMouseDown={(e) => {
+                          if (e.button !== 0) return;
+                          const target = e.target as HTMLElement;
+                          if (target.closest('button, a, textarea, input')) return;
+                          e.preventDefault();
+                          mouseDownInsideBlockRef.current = true;
+                          mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+                          setSelectedBlockIds([]);
+                          setActiveCalloutField('content');
+                          setPendingMousePoint({
+                            blockId: contentPointKey,
+                            point: {
+                              clientX: e.clientX,
+                              clientY: e.clientY,
+                              seq: Date.now() + Math.random(),
+                            },
+                          });
+                          onSelectBlock(block.id);
+                        }}
+                      >
+                        {isActive && activeCalloutField === 'content' ? (
+                          <InlinePageInput
+                            value={block.content}
+                            multiline={true}
+                            autoFocus
+                            initialCaretOffset={cursorOffset}
+                            pendingMouseDownPoint={
+                              pendingMousePoint?.blockId === contentPointKey
+                                ? pendingMousePoint.point
+                                : null
                             }
-                          }}
-                          rows={Math.max(1, block.content.split('\n').length)}
-                          className="w-full bg-transparent outline-none text-sm resize-y"
-                          style={{ tabSize: 4 }}
-                        />
-                      ) : (
-                        <div className="text-sm leading-relaxed" style={{ tabSize: 4 }}>
+                            externalCaretVersion={caretVersion}
+                            motionBlur={preferences.caretMotionBlur}
+                            smartTypography={preferences.smartTypography}
+                            placeholder="Contenu de l'alerte..."
+                            onCursorChange={(caret) => setCursorOffset(caret)}
+                            onChange={(val, caret) => {
+                              setCursorOffset(caret);
+                              updateSingleBlock(block.id, () => ({
+                                ...block,
+                                content: val,
+                              }));
+                            }}
+                            onKeyDown={(e, setProgrammaticSelection) => {
+                              const selStart = e.currentTarget.selectionStart ?? 0;
+                              const selEnd = e.currentTarget.selectionEnd ?? 0;
+                              if (
+                                e.key === 'ArrowUp' &&
+                                !e.shiftKey &&
+                                selStart === 0 &&
+                                selEnd === 0
+                              ) {
+                                e.preventDefault();
+                                setActiveCalloutField('title');
+                                setCursorOffset(block.title.length, true);
+                                return;
+                              }
+                              handleSmartKeyDown(
+                                e,
+                                block,
+                                block.content,
+                                (nextText, nextPos) => {
+                                  updateSingleBlock(block.id, () => ({
+                                    ...block,
+                                    content: nextText,
+                                  }));
+                                  setCursorOffset(nextPos);
+                                },
+                                setProgrammaticSelection
+                              );
+                            }}
+                          />
+                        ) : (
                           <LiveInlineTokens
                             text={block.content}
                             isBlockActive={false}
@@ -2483,59 +3286,100 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                             pandocMathRules={preferences.inlineMathPandocRules}
                             onNavigateAnchor={navigateAnchorOrUrl}
                           />
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   );
                 })()}
 
-              {/* 7. Standard Blockquote */}
+              {/* 7. Standard Blockquote with Smooth Gliding Caret */}
               {block.type === 'blockquote' && (
                 <blockquote
-                  className="my-4 pl-4 border-l-4 italic"
+                  className="my-4 pl-4 border-l-4 italic cursor-text"
                   style={{
                     borderLeftColor: 'var(--blockquote-border)',
                     color: 'var(--blockquote-text)',
                   }}
-                  onClick={() => onSelectBlock(block.id)}
+                  onMouseDown={(e) => activateBlockFromMouse(e, block.id, block.text)}
                 >
                   {isActive ? (
-                    <textarea
-                      autoFocus
+                    <InlinePageInput
                       value={block.text}
-                      onChange={(e) =>
-                        updateSingleBlock(block.id, () => ({ ...block, text: e.target.value }))
+                      multiline={true}
+                      autoFocus
+                      initialCaretOffset={cursorOffset}
+                      pendingMouseDownPoint={
+                        pendingMousePoint?.blockId === block.id
+                          ? pendingMousePoint.point
+                          : null
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') {
-                          e.preventDefault();
-                          const el = e.currentTarget;
-                          const s = el.selectionStart ?? 0;
-                          const end = el.selectionEnd ?? 0;
-                          const nextVal = block.text.slice(0, s) + '\t' + block.text.slice(end);
-                          updateSingleBlock(block.id, () => ({ ...block, text: nextVal }));
-                          requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
-                        }
+                      externalCaretVersion={caretVersion}
+                      motionBlur={preferences.caretMotionBlur}
+                      smartTypography={preferences.smartTypography}
+                      placeholder="Citation (Entrée sur ligne vide pour sortir)..."
+                      onCursorChange={(caret) => setCursorOffset(caret)}
+                      onChange={(val, caret) => {
+                        setCursorOffset(caret);
+                        updateSingleBlock(block.id, () => ({ ...block, text: val }));
                       }}
-                      rows={Math.max(1, block.text.split('\n').length)}
-                      className="w-full bg-transparent outline-none resize-y"
-                      style={{ tabSize: 4 }}
+                      onKeyDown={(e, setProgrammaticSelection) => {
+                        const selStart = e.currentTarget.selectionStart ?? 0;
+                        const selEnd = e.currentTarget.selectionEnd ?? 0;
+                        if (
+                          e.key === 'Enter' &&
+                          !e.shiftKey &&
+                          (block.text.trim() === '' ||
+                            (selStart === block.text.length && block.text.endsWith('\n')))
+                        ) {
+                          e.preventDefault();
+                          const cleaned = block.text.replace(/\n+$/, '');
+                          const newParaId = nextBlockId('p');
+                          const idx = blocks.findIndex((b) => b.id === block.id);
+                          const copy = [...blocks];
+                          if (!cleaned) {
+                            copy[idx] = { id: newParaId, type: 'paragraph', text: '' };
+                          } else {
+                            copy[idx] = { ...block, text: cleaned };
+                            copy.splice(idx + 1, 0, {
+                              id: newParaId,
+                              type: 'paragraph',
+                              text: '',
+                            });
+                          }
+                          onChangeBlocks(copy);
+                          setCursorOffset(0, true);
+                          onSelectBlock(newParaId, 0);
+                          return;
+                        }
+                        handleSmartKeyDown(
+                          e,
+                          block,
+                          block.text,
+                          (nextText, nextPos) => {
+                            updateSingleBlock(block.id, () => ({ ...block, text: nextText }));
+                            setCursorOffset(nextPos);
+                          },
+                          setProgrammaticSelection
+                        );
+                      }}
                     />
                   ) : (
-                    <LiveInlineTokens
-                      text={block.text}
-                      isBlockActive={false}
-                      cursorOffset={null}
-                      mathEnv={mathEnv}
-                      footnotesMap={footnotesMap}
-                      pandocMathRules={preferences.inlineMathPandocRules}
-                      onNavigateAnchor={navigateAnchorOrUrl}
-                    />
+                    <div className="min-h-[1.5rem]" style={{ tabSize: 4 }}>
+                      <LiveInlineTokens
+                        text={block.text}
+                        isBlockActive={false}
+                        cursorOffset={null}
+                        mathEnv={mathEnv}
+                        footnotesMap={footnotesMap}
+                        pandocMathRules={preferences.inlineMathPandocRules}
+                        onNavigateAnchor={navigateAnchorOrUrl}
+                      />
+                    </div>
                   )}
                 </blockquote>
               )}
 
-              {/* 8. Interactive Markdown Extra Table */}
+              {/* 8. Interactive Markdown Extra Table with Smooth Gliding Caret in Every Cell */}
               {block.type === 'table' && (
                 <InteractiveTableBlock
                   headers={block.headers}
@@ -2543,10 +3387,22 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                   rows={block.rows}
                   columnWidths={block.columnWidths}
                   isActive={isActive}
+                  motionBlur={preferences.caretMotionBlur}
+                  smartTypography={preferences.smartTypography}
                   mathEnv={mathEnv}
                   footnotesMap={footnotesMap}
                   pandocMathRules={preferences.inlineMathPandocRules}
                   onFocusBlock={() => onSelectBlock(block.id)}
+                  onExitTable={(dir) => {
+                    const idx = blocks.findIndex((b) => b.id === block.id);
+                    if (dir === 'up' && idx > 0) {
+                      setCursorOffset(999999, true);
+                      onSelectBlock(blocks[idx - 1].id, 999999);
+                    } else if (dir === 'down' && idx >= 0 && idx < blocks.length - 1) {
+                      setCursorOffset(0, true);
+                      onSelectBlock(blocks[idx + 1].id, 0);
+                    }
+                  }}
                   onChange={(nextTbl) =>
                     updateSingleBlock(block.id, () => ({
                       ...block,
@@ -2619,31 +3475,43 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                 </div>
               )}
 
-              {/* 13. Footnote Definition `[^1]: ...` */}
+              {/* 13. Footnote Definition `[^1]: ...` with Smooth Gliding Caret */}
               {block.type === 'footnote-def' && (
                 <div
-                  className="my-2 pl-3 border-l-2 text-xs flex items-baseline gap-2"
+                  className="my-2 pl-3 border-l-2 text-xs flex items-baseline gap-2 cursor-text"
                   style={{
                     borderLeftColor: 'var(--border-color)',
                     color: 'var(--meta-content-color)',
                   }}
-                  onClick={() => onSelectBlock(block.id)}
+                  onMouseDown={(e) => activateBlockFromMouse(e, block.id, block.content)}
                 >
-                  <span className="font-mono font-semibold" style={{ color: 'var(--primary-color)' }}>
+                  <span className="font-mono font-semibold shrink-0" style={{ color: 'var(--primary-color)' }}>
                     [^{block.label}]:
                   </span>
                   {isActive ? (
-                    <input
-                      type="text"
-                      autoFocus
+                    <InlinePageInput
                       value={block.content}
-                      onChange={(e) =>
+                      multiline={false}
+                      autoFocus
+                      initialCaretOffset={cursorOffset}
+                      pendingMouseDownPoint={
+                        pendingMousePoint?.blockId === block.id
+                          ? pendingMousePoint.point
+                          : null
+                      }
+                      externalCaretVersion={caretVersion}
+                      motionBlur={preferences.caretMotionBlur}
+                      smartTypography={preferences.smartTypography}
+                      placeholder="Définition de la note de bas de page..."
+                      className="flex-1"
+                      onCursorChange={(caret) => setCursorOffset(caret)}
+                      onChange={(val, caret) => {
+                        setCursorOffset(caret);
                         updateSingleBlock(block.id, () => ({
                           ...block,
-                          content: e.target.value,
-                        }))
-                      }
-                      className="flex-1 bg-transparent outline-none"
+                          content: val,
+                        }));
+                      }}
                     />
                   ) : (
                     <span>{block.content}</span>
