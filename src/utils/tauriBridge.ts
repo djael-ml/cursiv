@@ -472,3 +472,47 @@ export async function subscribeDirectoryWatch(
   });
   return unlisten;
 }
+
+
+const VIRTUAL_LOG_STORAGE_KEY = 'cursiv_virtual_logs_v1';
+
+export function writeAppLog(
+  level: 'INFO' | 'WARN' | 'ERROR' | 'CRASH',
+  source: string,
+  message: string
+): void {
+  if (isTauriEnvironment()) {
+    invoke('write_app_log', { level, source, message }).catch(() => {});
+    return;
+  }
+  try {
+    const line = `[${new Date().toISOString()}] [${level}] [${source}] ${message}`;
+    const prev = localStorage.getItem(VIRTUAL_LOG_STORAGE_KEY) || '';
+    const lines = prev ? prev.split('\n').slice(-180) : [];
+    lines.push(line);
+    localStorage.setItem(VIRTUAL_LOG_STORAGE_KEY, lines.join('\n'));
+  } catch {
+    // ignore
+  }
+}
+
+export async function getLogDirectoryPath(): Promise<string> {
+  if (isTauriEnvironment()) {
+    return invoke<string>('get_log_directory_path');
+  }
+  return '%TEMP%\\cursiv';
+}
+
+export async function readRecentLogs(maxLines = 150): Promise<string> {
+  if (isTauriEnvironment()) {
+    return invoke<string>('read_recent_logs', { maxLines });
+  }
+  return localStorage.getItem(VIRTUAL_LOG_STORAGE_KEY) || '';
+}
+
+export async function openLogDirectory(): Promise<string> {
+  if (isTauriEnvironment()) {
+    return invoke<string>('open_log_directory');
+  }
+  return '%TEMP%\\cursiv';
+}

@@ -1,3 +1,4 @@
+use crate::logger::{get_cursiv_temp_dir, write_log};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -233,7 +234,8 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
 
     // Unique filename in temp prevents any ERROR_SHARING_VIOLATION with an existing locked executable
     let unique_filename = format!("Cursiv-Setup-{}.{}", timestamp, ext);
-    let mut target_path: PathBuf = env::temp_dir();
+    let mut target_path: PathBuf = get_cursiv_temp_dir();
+    write_log("INFO", "rust::updater", &format!("T?l?chargement mise ? jour vers {}", target_path.to_string_lossy()));
     target_path.push(&unique_filename);
 
     // Using fs::write cleanly writes and IMMEDIATELY closes the file handle!

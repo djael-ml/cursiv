@@ -1,3 +1,4 @@
+use crate::logger::{get_cursiv_temp_dir, write_log};
 use crate::validate_safe_path;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -100,7 +101,8 @@ pub fn pandoc_export(req: PandocExportRequest) -> Result<String, String> {
         return Err(format!("Unsupported Pandoc target format: {}", req.format));
     }
 
-    let mut temp_input = std::env::temp_dir();
+    let mut temp_input = get_cursiv_temp_dir();
+    write_log("INFO", "rust::pandoc", &format!("Export Pandoc ({}) -> {}", req.format, req.output_path));
     temp_input.push("cursiv_export_source.md");
     std::fs::write(&temp_input, &req.markdown_content)
         .map_err(|e| format!("Failed writing temporary markdown source: {}", e))?;

@@ -23,12 +23,14 @@ import {
   duplicateFilePath,
   isTauriEnvironment,
   listWorkspaceFiles,
+  openLogDirectory,
   readBinaryDataUrl,
   readTextFile,
   renameFilePath,
   runPandocImport,
   subscribeDirectoryWatch,
   UpdateCheckResult,
+  writeAppLog,
   writeTextFile,
 } from './utils/tauriBridge';
 import {
@@ -172,6 +174,10 @@ class EditorErrorBoundary extends React.Component<
       hasError: true,
       errorMessage: error?.message || 'Erreur inattendue de rendu',
     };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    writeAppLog('CRASH', 'ui::EditorErrorBoundary', `${error?.message || 'Error'} | ${error?.stack || ''} | ${info?.componentStack || ''}`);
   }
 
   render() {
@@ -440,6 +446,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     const handleBeforeUnload = () => {
       saveSessionToStorage();
+      writeAppLog('INFO', 'ui::session', `Fermeture / sauvegarde session sur ${currentFilePath}`);
       if (isDirty && !isImageFilePath(currentFilePath)) {
         writeTextFile(currentFilePath, rawText).catch(() => {});
       }
@@ -447,6 +454,19 @@ export const App: React.FC = () => {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [saveSessionToStorage, isDirty, currentFilePath, rawText]);
+
+  useEffect(() => {
+    writeAppLog('INFO', 'ui::startup', `Session UI active: ${currentFilePath} (th?me=${preferences.theme})`);
+    const onErr = (e: ErrorEvent) => writeAppLog('ERROR', 'ui::window.onerror', `${e.message} (${e.filename}:${e.lineno})`);
+    const onRej = (e: PromiseRejectionEvent) => writeAppLog('ERROR', 'ui::unhandledrejection', String(e.reason));
+    window.addEventListener('error', onErr);
+    window.addEventListener('unhandledrejection', onRej);
+    return () => {
+      window.removeEventListener('error', onErr);
+      window.removeEventListener('unhandledrejection', onRej);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Ctrl + Mouse Wheel Page Scale (scales only the document sheet, never the window or sidebar)
   useEffect(() => {

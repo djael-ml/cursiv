@@ -1,7 +1,9 @@
 pub mod github_updater;
+pub mod logger;
 pub mod pandoc_bridge;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use logger::{init_logger_and_panic_hook, write_log};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -334,9 +336,17 @@ fn list_workspace_files(
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     let safe_path = validate_safe_path(&path)?;
-    let bytes =
-        fs::read(&safe_path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
-    Ok(decode_bytes_to_text(&bytes))
+    match fs::read(&safe_path) {
+        Ok(bytes) => {
+            write_log("INFO", "rust::fs", &format!("read_text_file('{}') ({} octets)", path, bytes.len()));
+            Ok(decode_bytes_to_text(&bytes))
+        }
+        Err(e) => {
+            let msg = format!("Failed to read '{}': {}", path, e);
+            write_log("ERROR", "rust::fs", &msg);
+            Err(msg)
+        }
+    }
 }
 
 #[tauri::command]
@@ -369,7 +379,18 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     if let Some(parent) = safe_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    fs::write(&safe_path, content).map_err(|e| format!("Failed to write '{}': {}", path, e))
+    let len = content.len();
+    match fs::write(&safe_path, content) {
+        Ok(()) => {
+            write_log("INFO", "rust::fs", &format!("write_text_file('{}') ({} octets)", path, len));
+            Ok(())
+        }
+        Err(e) => {
+            let msg = format!("Failed to write '{}': {}", path, e);
+            write_log("ERROR", "rust::fs", &msg);
+            Err(msg)
+        }
+    }
 }
 
 #[tauri::command]
@@ -515,6 +536,8 @@ fn watch_directory(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_logger_and_panic_hook();
+
     tauri::Builder::default()
         .manage(WatcherState {
             workspace_watcher: Mutex::new(None),
@@ -534,6 +557,10 @@ pub fn run() {
             delete_path,
             copy_image_to_assets,
             watch_directory,
+            logger::write_app_log,
+            logger::get_log_directory_path,
+            logger::read_recent_logs,
+            logger::open_log_directory,
             github_updater::check_github_updates,
             github_updater::download_and_apply_update,
             pandoc_bridge::detect_pandoc,

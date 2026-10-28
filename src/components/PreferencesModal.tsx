@@ -17,7 +17,7 @@ import {
   WaterTintPreset,
 } from '../types/editor';
 import { BUILTIN_THEMES, DISCREET_ACCENT_PRESETS } from '../utils/themeManager';
-import { detectPandocBinary, PandocStatus } from '../utils/tauriBridge';
+import { detectPandocBinary, getLogDirectoryPath, openLogDirectory, PandocStatus, readRecentLogs } from '../utils/tauriBridge';
 
 interface PreferencesModalProps {
   isOpen: boolean;
@@ -37,11 +37,15 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
   >('appearance');
   const [pandocStatus, setPandocStatus] = useState<PandocStatus | null>(null);
   const [editingCssThemeId, setEditingCssThemeId] = useState<string>(preferences.theme);
+  const [logDirPath, setLogDirPath] = useState<string>('%TEMP%\\cursiv');
+  const [recentLogs, setRecentLogs] = useState<string>('');
 
   useEffect(() => {
     if (isOpen) {
       detectPandocBinary(preferences.pandocPath).then(setPandocStatus);
       setEditingCssThemeId(preferences.theme);
+      getLogDirectoryPath().then(setLogDirPath).catch(() => {});
+      readRecentLogs(120).then(setRecentLogs).catch(() => {});
     }
   }, [isOpen, preferences.pandocPath, preferences.theme]);
 
@@ -112,7 +116,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           </div>
 
           <div className="text-[11px] opacity-65 px-2 leading-relaxed">
-            <div className="font-semibold">Cursiv. v1.17.0</div>
+            <div className="font-semibold">Cursiv. v1.17.1</div>
             <div>Par Djaël Mola · Licence MIT</div>
           </div>
         </div>
@@ -861,6 +865,22 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
                     className="w-full px-3 py-1.5 rounded border bg-transparent font-mono"
                     style={{ borderColor: 'var(--border-color)' }}
                   />
+                </div>
+
+                <div className="my-2 border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="font-semibold">Journaux d&apos;ex?cution &amp; Diagnostics (`%TEMP%\cursiv`)</div>
+                      <div className="font-mono text-[11px] break-all" style={{ color: 'var(--meta-content-color)' }}>{logDirPath}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button type="button" onClick={() => readRecentLogs(120).then(setRecentLogs)} className="px-2.5 py-1 rounded-lg border text-xs hover:bg-black/5 cursor-pointer" style={{ borderColor: 'var(--border-color)' }}>Rafra?chir</button>
+                      <button type="button" onClick={() => openLogDirectory()} className="px-3 py-1 rounded-lg border text-xs font-medium cursor-pointer" style={{ borderColor: 'var(--primary-color)', color: 'var(--primary-color)', backgroundColor: 'color-mix(in srgb, var(--primary-color) 12%, transparent)' }}>Ouvrir `%TEMP%\cursiv`</button>
+                    </div>
+                  </div>
+                  <textarea readOnly value={recentLogs || 'Aucune entr?e de log pour le moment.'} rows={7} className="w-full p-2.5 rounded-lg border font-mono text-[11px] outline-none leading-relaxed" style={{ backgroundColor: 'var(--code-bg-color)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }} />
                 </div>
               </div>
             )}

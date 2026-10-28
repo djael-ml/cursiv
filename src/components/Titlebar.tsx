@@ -13,7 +13,7 @@ import {
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { BuiltInThemeId, CursivPreferences, LastExportConfig } from '../types/editor';
 import { BUILTIN_THEMES } from '../utils/themeManager';
-import { isTauriEnvironment } from '../utils/tauriBridge';
+import { isTauriEnvironment, openLogDirectory } from '../utils/tauriBridge';
 
 interface TitlebarProps {
   currentFileName: string;
