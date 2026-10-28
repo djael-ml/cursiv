@@ -7,6 +7,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_REPO: &str = "djael-ml/cursiv";
 
@@ -77,7 +83,6 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
 fn select_platform_asset(assets: &[GitHubReleaseAsset]) -> Option<String> {
     let os = env::consts::OS;
     if os == "windows" {
-        // Prioritize Cursiv-Setup.exe or *-setup.exe (NSIS installer)
         if let Some(exact) = assets
             .iter()
             .find(|a| a.name.eq_ignore_ascii_case("Cursiv-Setup.exe"))
@@ -122,7 +127,7 @@ pub async fn check_github_updates(
         .unwrap_or_else(|| DEFAULT_REPO.to_string());
 
     let client = reqwest::Client::builder()
-        .user_agent("Cursiv-Desktop-Updater/1.15.0")
+        .user_agent("Cursiv-Desktop-Updater/1.18.2")
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
@@ -190,8 +195,14 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
         return Err("Security policy: Updates can only be downloaded from official GitHub HTTPS endpoints.".to_string());
     }
 
+    write_log(
+        "INFO",
+        "rust::updater",
+        &format!("Démarrage du téléchargement de la mise à jour depuis {}", download_url),
+    );
+
     let client = reqwest::Client::builder()
-        .user_agent("Cursiv-Desktop-Updater/1.15.0")
+        .user_agent("Cursiv-Desktop-Updater/1.18.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -213,7 +224,6 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
         .await
         .map_err(|e| format!("Failed reading update stream: {}", e))?;
 
-    // Compute SHA-256 digest for integrity verification
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let sha256_hex = format!("{:x}", hasher.finalize());
@@ -232,51 +242,173 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
     let is_msi = raw_name.to_lowercase().ends_with(".msi");
     let ext = if is_msi { "msi" } else { "exe" };
 
-    // Unique filename in temp prevents any ERROR_SHARING_VIOLATION with an existing locked executable
     let unique_filename = format!("Cursiv-Setup-{}.{}", timestamp, ext);
-    let mut target_path: PathBuf = get_cursiv_temp_dir();
-    write_log("INFO", "rust::updater", &format!("T?l?chargement mise ? jour vers {}", target_path.to_string_lossy()));
-    target_path.push(&unique_filename);
+    let temp_dir: PathBuf = get_cursiv_temp_dir();
+    let target_path: PathBuf = temp_dir.join(&unique_filename);
 
-    // Using fs::write cleanly writes and IMMEDIATELY closes the file handle!
-    // This completely resolves Windows os error 32 (Sharing Violation) when spawning the .exe!
+    write_log(
+        "INFO",
+        "rust::updater",
+        &format!(
+            "Téléchargement terminé ({} octets, SHA256={}). Écriture vers {}",
+            bytes.len(),
+            &sha256_hex[..12],
+            target_path.to_string_lossy()
+        ),
+    );
+
     fs::write(&target_path, &bytes)
         .map_err(|e| format!("Failed to write update payload: {}", e))?;
 
     #[cfg(target_os = "windows")]
     {
         if !is_msi {
-            // Launch NSIS silent installer (/S) detached with retry loop
-            let mut launched = false;
-            let mut last_err = String::new();
+            let current_pid = std::process::id();
+            let current_exe = env::current_exe()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let log_file_path = temp_dir.join("cursiv.log");
+            let runner_ps1_path = temp_dir.join(format!("cursiv-update-runner-{}.ps1", timestamp));
 
-            for attempt in 0..6 {
-                if attempt > 0 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-                }
+            let ps_escape = |s: &str| s.replace('\'', "''");
+            let ps_script = format!(
+                r#"$ErrorActionPreference = 'SilentlyContinue'
+$logFile = '{log_file}'
+$installerPath = '{installer}'
+$oldPid = {pid}
+$savedExePath = '{saved_exe}'
 
-                let status = Command::new("cmd")
-                    .args(["/c", "start", "", &target_path.to_string_lossy(), "/S"])
-                    .spawn();
+function Write-UpdaterLog([string]$msg) {{
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+    Add-Content -Path $logFile -Value "[$ts] [INFO] [updater-runner] $msg" -Encoding UTF8
+}}
 
-                match status {
-                    Ok(_) => {
-                        launched = true;
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = e.to_string();
-                    }
-                }
+Write-UpdaterLog "Démarrage du runner de mise à jour et relance automatique (PID=$oldPid)"
+
+for ($i = 0; $i -lt 30; $i++) {{
+    $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+    if (-not $p) {{ break }}
+    Start-Sleep -Milliseconds 150
+}}
+
+$stillAlive = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+if ($stillAlive) {{
+    Write-UpdaterLog "Arrêt forcé de l'instance précédente (PID=$oldPid)"
+    Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 350
+}}
+
+Write-UpdaterLog "Exécution silencieuse de l'installeur NSIS : $installerPath /S"
+$nsisProc = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru -WindowStyle Hidden
+if ($nsisProc) {{
+    $nsisProc.WaitForExit()
+    Write-UpdaterLog "Installation NSIS terminée (Code=$($nsisProc.ExitCode))"
+}} else {{
+    Write-UpdaterLog "Fallback cmd /c pour l'installeur NSIS"
+    Start-Process -FilePath 'cmd.exe' -ArgumentList "/c `"`"$installerPath`" /S`"" -Wait -WindowStyle Hidden
+}}
+
+Start-Sleep -Milliseconds 600
+
+$candidates = @(
+    $savedExePath,
+    "$env:LOCALAPPDATA\Programs\Cursiv\Cursiv.exe",
+    "$env:LOCALAPPDATA\Programs\Cursiv\cursiv.exe",
+    "$env:LOCALAPPDATA\Programs\cursiv\Cursiv.exe",
+    "$env:LOCALAPPDATA\Cursiv\Cursiv.exe",
+    "$env:LOCALAPPDATA\cursiv\Cursiv.exe",
+    "$env:ProgramFiles\Cursiv\Cursiv.exe"
+)
+
+$exeToLaunch = $null
+foreach ($cand in $candidates) {{
+    if (-not [string]::IsNullOrWhiteSpace($cand) -and (Test-Path -LiteralPath $cand)) {{
+        $exeToLaunch = $cand
+        break
+    }}
+}}
+
+if (-not $exeToLaunch) {{
+    $found = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter 'Cursiv.exe' -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) {{ $exeToLaunch = $found.FullName }}
+}}
+
+$alreadyRunning = Get-Process -Name 'Cursiv', 'cursiv' -ErrorAction SilentlyContinue
+if (-not $alreadyRunning -and $exeToLaunch) {{
+    $workDir = Split-Path -Parent $exeToLaunch
+    Write-UpdaterLog "Relance automatique de Cursiv : $exeToLaunch"
+    Start-Process -FilePath $exeToLaunch -WorkingDirectory $workDir -WindowStyle Normal
+}} elseif ($alreadyRunning) {{
+    Write-UpdaterLog "Cursiv est déjà en cours d'exécution après la mise à jour."
+}} else {{
+    Write-UpdaterLog "ERREUR : Impossible de localiser Cursiv.exe pour la relance automatique."
+}}
+
+Start-Sleep -Seconds 2
+Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+"#,
+                log_file = ps_escape(&log_file_path.to_string_lossy()),
+                installer = ps_escape(&target_path.to_string_lossy()),
+                pid = current_pid,
+                saved_exe = ps_escape(&current_exe),
+            );
+
+            let mut ps_bytes = vec![0xEF, 0xBB, 0xBF];
+            ps_bytes.extend_from_slice(ps_script.as_bytes());
+            fs::write(&runner_ps1_path, &ps_bytes)
+                .map_err(|e| format!("Failed to write updater runner script: {}", e))?;
+
+            let spawn_res = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    &runner_ps1_path.to_string_lossy(),
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+
+            if let Err(ps_err) = spawn_res {
+                write_log(
+                    "WARN",
+                    "rust::updater",
+                    &format!("PowerShell runner indisponible ({}), fallback cmd.exe", ps_err),
+                );
+                let fallback_exe = if !current_exe.is_empty() {
+                    current_exe.clone()
+                } else {
+                    r#"%LOCALAPPDATA%\Programs\Cursiv\Cursiv.exe"#.to_string()
+                };
+                let cmd_line = format!(
+                    r#"timeout /t 1 /nobreak >nul & start "" /wait "{}" /S & start "" "{}""#,
+                    target_path.to_string_lossy(),
+                    fallback_exe
+                );
+                Command::new("cmd")
+                    .args(["/C", &cmd_line])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .map_err(|e| format!("Failed to launch update fallback runner: {}", e))?;
+            } else {
+                write_log(
+                    "INFO",
+                    "rust::updater",
+                    &format!(
+                        "Runner de mise à jour lancé ({}) — fermeture de Cursiv (PID={}) pour installation et relance automatique",
+                        runner_ps1_path.to_string_lossy(),
+                        current_pid
+                    ),
+                );
             }
 
-            if !launched {
-                return Err(format!("Failed to launch NSIS installer executable: {}", last_err));
-            }
-
-            // Cleanly exit Cursiv process after brief moment so NSIS can replace binaries without sharing violation
             std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 std::process::exit(0);
             });
         } else {
@@ -311,4 +443,3 @@ pub async fn download_and_apply_update(download_url: String) -> Result<String, S
         &sha256_hex[..12]
     ))
 }
-

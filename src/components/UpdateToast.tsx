@@ -49,7 +49,7 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
         setStatusMessage(text);
       });
       setProgress(100);
-      setStatusMessage('Mise à jour lancée ! Fermeture de Cursiv pour finalisation...');
+      setStatusMessage('Installation en cours… Cursiv va se relancer automatiquement !');
       setTimeout(async () => {
         if (isTauriEnvironment()) {
           try {
@@ -58,7 +58,7 @@ export const UpdateToast: React.FC<UpdateToastProps> = ({
             // ignore
           }
         }
-      }, 1500);
+      }, 450);
     } catch (err) {
       setStatusMessage(
         `Erreur : ${err instanceof Error ? err.message : String(err)}`

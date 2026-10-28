@@ -116,7 +116,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           </div>
 
           <div className="text-[11px] opacity-65 px-2 leading-relaxed">
-            <div className="font-semibold">Cursiv. v1.18.1</div>
+            <div className="font-semibold">Cursiv. v1.18.2</div>
             <div>Par Djaël Mola · Licence MIT</div>
           </div>
         </div>
@@ -872,15 +872,15 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <div className="font-semibold">Journaux d&apos;ex?cution &amp; Diagnostics (`%TEMP%\cursiv`)</div>
+                      <div className="font-semibold">Journaux d&apos;exécution &amp; Diagnostics (`%TEMP%\cursiv`)</div>
                       <div className="font-mono text-[11px] break-all" style={{ color: 'var(--meta-content-color)' }}>{logDirPath}</div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      <button type="button" onClick={() => readRecentLogs(120).then(setRecentLogs)} className="px-2.5 py-1 rounded-lg border text-xs hover:bg-black/5 cursor-pointer" style={{ borderColor: 'var(--border-color)' }}>Rafra?chir</button>
+                      <button type="button" onClick={() => readRecentLogs(120).then(setRecentLogs)} className="px-2.5 py-1 rounded-lg border text-xs hover:bg-black/5 cursor-pointer" style={{ borderColor: 'var(--border-color)' }}>Rafraîchir</button>
                       <button type="button" onClick={() => openLogDirectory()} className="px-3 py-1 rounded-lg border text-xs font-medium cursor-pointer" style={{ borderColor: 'var(--primary-color)', color: 'var(--primary-color)', backgroundColor: 'color-mix(in srgb, var(--primary-color) 12%, transparent)' }}>Ouvrir `%TEMP%\cursiv`</button>
                     </div>
                   </div>
-                  <textarea readOnly value={recentLogs || 'Aucune entr?e de log pour le moment.'} rows={7} className="w-full p-2.5 rounded-lg border font-mono text-[11px] outline-none leading-relaxed" style={{ backgroundColor: 'var(--code-bg-color)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }} />
+                  <textarea readOnly value={recentLogs || 'Aucune entrée de log pour le moment.'} rows={7} className="w-full p-2.5 rounded-lg border font-mono text-[11px] outline-none leading-relaxed" style={{ backgroundColor: 'var(--code-bg-color)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }} />
                 </div>
               </div>
             )}

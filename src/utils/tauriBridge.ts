@@ -369,40 +369,25 @@ export async function downloadAndApplyUpdate(
   onProgress?: (percent: number, statusText: string) => void
 ): Promise<string> {
   if (isTauriEnvironment()) {
-    // 1. Primary Engine: @tauri-apps/plugin-updater + @tauri-apps/plugin-process
+    onProgress?.(25, "Téléchargement de l'installeur Cursiv-Setup.exe...");
     try {
-      const update = cachedNativeUpdate || (await check());
-      if (update) {
-        let downloadedBytes = 0;
-        let totalBytes = 0;
-        await update.downloadAndInstall((event) => {
-          if (event.event === 'Started') {
-            totalBytes = event.data.contentLength || 0;
-            onProgress?.(5, 'Téléchargement de la mise à jour signée...');
-          } else if (event.event === 'Progress') {
-            downloadedBytes += event.data.chunkLength;
-            if (totalBytes > 0) {
-              const pct = Math.min(98, Math.round((downloadedBytes / totalBytes) * 100));
-              onProgress?.(pct, `Téléchargement en cours (${pct}%)...`);
-            } else {
-              onProgress?.(50, `Téléchargement (${(downloadedBytes / 1024 / 1024).toFixed(1)} Mo)...`);
-            }
-          } else if (event.event === 'Finished') {
-            onProgress?.(100, 'Installation terminée, relance de Cursiv...');
-          }
-        });
-        await relaunch();
-        return 'Mise à jour installée via Tauri Updater';
+      const res = await invoke<string>('download_and_apply_update', { downloadUrl });
+      onProgress?.(100, 'Installation en cours et relance automatique de Cursiv...');
+      return res;
+    } catch (invokeErr) {
+      // Fallback to @tauri-apps/plugin-updater + relaunch if direct GitHub download failed
+      try {
+        const update = cachedNativeUpdate || (await check());
+        if (update) {
+          await update.downloadAndInstall();
+          await relaunch();
+          return 'Mise à jour installée via Tauri Updater';
+        }
+      } catch {
+        // Re-throw primary error below
       }
-    } catch {
-      // Fallback to direct NSIS .exe silent installer (/S)
+      throw invokeErr;
     }
-
-    // 2. Fallback Engine: Direct GitHub Release .exe Silent Installer (/S)
-    onProgress?.(35, "Téléchargement direct de l'installeur Cursiv-Setup.exe...");
-    const res = await invoke<string>('download_and_apply_update', { downloadUrl });
-    onProgress?.(100, 'Installation silencieuse NSIS (/S) lancée !');
-    return res;
   }
 
   window.open(downloadUrl, '_blank', 'noopener,noreferrer');
