@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { rust } from '@codemirror/lang-rust';
@@ -139,24 +140,29 @@ export const SUPPORTED_CODE_LANGUAGES = [
   'sequence',
 ];
 
-function resolveLanguageExtension(lang: string) {
-  const l = lang.toLowerCase().trim();
-  if (l === 'js' || l === 'javascript') return javascript();
-  if (l === 'ts' || l === 'typescript') return javascript({ typescript: true });
+export function resolveLanguageExtension(lang: string) {
+  const l = lang.toLowerCase().trim().replace(/^\./, '');
+  if (l === 'js' || l === 'mjs' || l === 'cjs' || l === 'javascript') return javascript();
+  if (l === 'ts' || l === 'mts' || l === 'cts' || l === 'typescript')
+    return javascript({ typescript: true });
   if (l === 'jsx') return javascript({ jsx: true });
   if (l === 'tsx') return javascript({ jsx: true, typescript: true });
-  if (l === 'py' || l === 'python') return python();
+  if (l === 'py' || l === 'pyw' || l === 'python') return python();
   if (l === 'rs' || l === 'rust') return rust();
-  if (l === 'html' || l === 'vue' || l === 'svelte') return html();
-  if (l === 'css' || l === 'scss' || l === 'less') return css();
-  if (l === 'json' || l === 'jsonc') return json();
-  if (l === 'md' || l === 'markdown') return markdown();
-  if (l === 'sql' || l === 'plsql') return sql();
-  if (l === 'c' || l === 'cpp' || l === 'c++' || l === 'csharp' || l === 'java') return cpp();
-  if (l === 'java' || l === 'kotlin' || l === 'scala') return java();
+  if (l === 'html' || l === 'htm' || l === 'vue' || l === 'svelte' || l === 'astro')
+    return html();
+  if (l === 'css' || l === 'scss' || l === 'sass' || l === 'less') return css();
+  if (l === 'json' || l === 'jsonc' || l === 'json5') return json();
+  if (l === 'md' || l === 'markdown' || l === 'mdx' || l === 'rmd') return markdown();
+  if (l === 'sql' || l === 'plsql' || l === 'tsql') return sql();
+  if (l === 'java' || l === 'kotlin' || l === 'kt' || l === 'scala' || l === 'groovy')
+    return java();
+  if (l === 'c' || l === 'h' || l === 'cpp' || l === 'cc' || l === 'cxx' || l === 'hpp' || l === 'c++' || l === 'csharp' || l === 'cs')
+    return cpp();
   if (l === 'php') return php();
-  if (l === 'xml' || l === 'svg') return xml();
-  if (l === 'yaml' || l === 'yml' || l === 'toml') return yaml();
+  if (l === 'xml' || l === 'svg' || l === 'plist' || l === 'xhtml') return xml();
+  if (l === 'yaml' || l === 'yml' || l === 'toml' || l === 'ini' || l === 'conf' || l === 'cfg' || l === 'env')
+    return yaml();
   return [];
 }
 
@@ -272,7 +278,9 @@ export const CodeFenceBlock: React.FC<CodeFenceBlockProps> = ({
       doc: code,
       extensions: [
         history(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        bracketMatching(),
+        closeBrackets(),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         langCompartment.current.of(resolveLanguageExtension(language)),
         lineNumCompartment.current.of(showLineNumbers ? lineNumbers() : []),

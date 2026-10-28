@@ -51,8 +51,145 @@ pub fn validate_safe_path(raw_path: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn read_markdown_excerpt(path: &Path) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
+fn decode_bytes_to_text(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(&bytes[3..]).to_string();
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) && bytes.len() >= 2 {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) && bytes.len() >= 2 {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    }
+}
+
+fn is_supported_text_or_code_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md" | "markdown"
+            | "mdown"
+            | "mkd"
+            | "mdx"
+            | "txt"
+            | "text"
+            | "log"
+            | "note"
+            | "rst"
+            | "adoc"
+            | "asciidoc"
+            | "org"
+            | "tex"
+            | "bib"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "jsonc"
+            | "jsonl"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "env"
+            | "properties"
+            | "xml"
+            | "plist"
+            | "svg"
+            | "html"
+            | "htm"
+            | "xhtml"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "js"
+            | "mjs"
+            | "cjs"
+            | "jsx"
+            | "ts"
+            | "mts"
+            | "cts"
+            | "tsx"
+            | "py"
+            | "pyw"
+            | "pyi"
+            | "rs"
+            | "go"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cc"
+            | "cxx"
+            | "cs"
+            | "java"
+            | "kt"
+            | "kts"
+            | "swift"
+            | "php"
+            | "rb"
+            | "lua"
+            | "pl"
+            | "r"
+            | "sql"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "dockerfile"
+            | "makefile"
+            | "cmake"
+            | "gradle"
+            | "vue"
+            | "svelte"
+            | "astro"
+            | "graphql"
+            | "gql"
+            | "proto"
+            | "prisma"
+            | "tf"
+            | "hcl"
+            | "nix"
+            | "zig"
+            | "dart"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hs"
+            | "clj"
+            | "scala"
+    )
+}
+
+fn is_supported_image_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "avif"
+    )
+}
+
+fn read_text_excerpt(path: &Path, size: u64) -> Option<String> {
+    if size > 512 * 1024 {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let content = decode_bytes_to_text(&bytes);
     let mut lines = Vec::new();
     let mut in_yaml = false;
     for (idx, line) in content.lines().enumerate() {
@@ -98,7 +235,7 @@ fn scan_dir_recursive(
         if !include_hidden && name.starts_with('.') {
             continue;
         }
-        if name == "node_modules" || name == "target" || name == ".git" {
+        if name == "node_modules" || name == "target" || name == ".git" || name == "dist" {
             continue;
         }
 
@@ -127,18 +264,31 @@ fn scan_dir_recursive(
             });
         } else {
             let lower = name.to_lowercase();
-            let is_md = lower.ends_with(".md")
-                || lower.ends_with(".markdown")
-                || lower.ends_with(".mdown")
-                || lower.ends_with(".mkd")
-                || lower.ends_with(".txt");
+            let ext = Path::new(&lower)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let is_md = matches!(ext, "md" | "markdown" | "mdown" | "mkd" | "mdx");
+            let is_text_or_code = is_supported_text_or_code_ext(ext)
+                || matches!(
+                    lower.as_str(),
+                    "dockerfile"
+                        | "makefile"
+                        | "license"
+                        | "readme"
+                        | "changelog"
+                        | ".gitignore"
+                        | ".env"
+                        | ".editorconfig"
+                );
+            let is_image = is_supported_image_ext(ext);
 
-            if !include_non_markdown && !is_md {
+            if !include_non_markdown && !is_md && !is_text_or_code && !is_image {
                 continue;
             }
 
-            let excerpt = if is_md {
-                read_markdown_excerpt(&path)
+            let excerpt = if is_text_or_code {
+                read_text_excerpt(&path, meta.len())
             } else {
                 None
             };
@@ -184,7 +334,33 @@ fn list_workspace_files(
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     let safe_path = validate_safe_path(&path)?;
-    fs::read_to_string(&safe_path).map_err(|e| format!("Failed to read '{}': {}", path, e))
+    let bytes =
+        fs::read(&safe_path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+    Ok(decode_bytes_to_text(&bytes))
+}
+
+#[tauri::command]
+fn read_binary_base64(path: String) -> Result<String, String> {
+    let safe_path = validate_safe_path(&path)?;
+    let bytes =
+        fs::read(&safe_path).map_err(|e| format!("Failed to read binary '{}': {}", path, e))?;
+    let ext = safe_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    };
+    Ok(format!("data:{};base64,{}", mime, BASE64.encode(&bytes)))
 }
 
 #[tauri::command]
@@ -248,7 +424,6 @@ fn delete_path(path: String) -> Result<(), String> {
         return Ok(());
     }
     if target.is_dir() {
-        // Only remove empty directories or directories inside user workspace
         fs::remove_dir_all(&target).map_err(|e| format!("Failed to delete folder: {}", e))
     } else {
         fs::remove_file(&target).map_err(|e| format!("Failed to delete file: {}", e))
@@ -351,6 +526,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_workspace_files,
             read_text_file,
+            read_binary_base64,
             write_text_file,
             create_file_or_dir,
             rename_path,

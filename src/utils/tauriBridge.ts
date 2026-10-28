@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { FileEntryNode } from '../types/editor';
+import { getStarterContentForPath } from './fileTypes';
 
 export function isTauriEnvironment(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -193,7 +194,15 @@ export async function readTextFile(path: string): Promise<string> {
     return invoke<string>('read_text_file', { path });
   }
   const vfs = getVirtualFiles();
-  return vfs[path]?.content ?? DEFAULT_WELCOME_MARKDOWN;
+  return vfs[path]?.content ?? '';
+}
+
+export async function readBinaryDataUrl(path: string): Promise<string> {
+  if (isTauriEnvironment() && !path.startsWith('/Workspace')) {
+    return invoke<string>('read_binary_base64', { path });
+  }
+  const vfs = getVirtualFiles();
+  return vfs[path]?.content ?? '';
 }
 
 export async function writeTextFile(path: string, content: string): Promise<void> {
@@ -207,18 +216,17 @@ export async function writeTextFile(path: string, content: string): Promise<void
 }
 
 export async function createFileOrDir(path: string, isDir: boolean): Promise<void> {
-  const titleName = path.split('/').pop()?.replace(/\.md$/i, '') || 'Nouvelle Note';
-  const starterMarkdown = `# ${titleName}\n\n`;
+  const starterContent = getStarterContentForPath(path);
   if (isTauriEnvironment() && !path.startsWith('/Workspace')) {
     await invoke('create_file_or_dir', { path, isDir });
-    if (!isDir) {
-      await invoke('write_text_file', { path, content: starterMarkdown });
+    if (!isDir && starterContent) {
+      await invoke('write_text_file', { path, content: starterContent });
     }
     return;
   }
   if (!isDir) {
     const vfs = getVirtualFiles();
-    vfs[path] = { content: starterMarkdown, modified_ms: Date.now() };
+    vfs[path] = { content: starterContent, modified_ms: Date.now() };
     saveVirtualFiles(vfs);
   }
 }
@@ -245,7 +253,7 @@ export async function duplicateFilePath(path: string): Promise<string> {
     return invoke<string>('duplicate_file', { path });
   }
   const vfs = getVirtualFiles();
-  const copyPath = path.replace(/(\.md)?$/i, ' (Copie).md');
+  const copyPath = path.replace(/(\.[^./\\]+)?$/, (_, ext) => ` (Copie)${ext || '.md'}`);
   vfs[copyPath] = {
     content: vfs[path]?.content || '',
     modified_ms: Date.now(),

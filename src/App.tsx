@@ -14,7 +14,7 @@ import {
   serializeBlocksToMarkdown,
   slugifyHeading,
 } from './utils/markdownParser';
-import { applyThemeCss } from './utils/themeManager';
+import { applyThemeCss, BUILTIN_THEMES } from './utils/themeManager';
 import {
   checkGitHubUpdates,
   createFileOrDir,
@@ -23,6 +23,7 @@ import {
   duplicateFilePath,
   isTauriEnvironment,
   listWorkspaceFiles,
+  readBinaryDataUrl,
   readTextFile,
   renameFilePath,
   runPandocImport,
@@ -30,6 +31,12 @@ import {
   UpdateCheckResult,
   writeTextFile,
 } from './utils/tauriBridge';
+import {
+  describeFilePath,
+  getStarterContentForPath,
+  isImageFilePath,
+  isMarkdownFilePath,
+} from './utils/fileTypes';
 import {
   executeDocumentExport,
   getLastExportConfig,
@@ -44,12 +51,13 @@ import { UpdateToast } from './components/UpdateToast';
 import { FindMatch, FindReplaceBar } from './components/FindReplaceBar';
 import { PaletteCommand, QuickSwitcher } from './components/QuickSwitcher';
 import { replaceAllInBlocks, replaceOccurrenceInBlocks } from './utils/findReplace';
-import { BUILTIN_THEMES } from './utils/themeManager';
 
-const HISTORY_LIMIT = 200;
-const HISTORY_COALESCE_MS = 800;
+const HISTORY_LIMIT = 250;
+const HISTORY_COALESCE_MS = 600;
 
-const PREFERENCES_STORAGE_KEY = 'cursiv_preferences_v1_14';
+const PREFERENCES_STORAGE_KEY = 'cursiv_preferences_v1_17';
+const LEGACY_PREFERENCES_STORAGE_KEY = 'cursiv_preferences_v1_14';
+const SESSION_STORAGE_KEY = 'cursiv_session_state_v1';
 
 const DEFAULT_PREFERENCES: CursivPreferences = {
   theme: 'github',
@@ -83,7 +91,11 @@ const DEFAULT_PREFERENCES: CursivPreferences = {
   pandocPath: '',
   githubUpdateRepo: 'djael-ml/cursiv',
   showHiddenFiles: false,
-  showNonMarkdownFiles: false,
+  showNonMarkdownFiles: true,
+  waterOpacity: 72,
+  waterBlurPx: 18,
+  waterRefraction: 35,
+  waterTint: 'lagoon',
 };
 
 function loadInitialPreferences(): CursivPreferences {
@@ -92,33 +104,153 @@ function loadInitialPreferences(): CursivPreferences {
     if (raw) {
       return { ...DEFAULT_PREFERENCES, ...JSON.parse(raw) };
     }
+    const legacy = localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY);
+    if (legacy) {
+      const migrated = {
+        ...DEFAULT_PREFERENCES,
+        ...JSON.parse(legacy),
+        showNonMarkdownFiles: true,
+      };
+      localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(migrated));
+      return migrated;
+    }
   } catch {
     // ignore
   }
   return DEFAULT_PREFERENCES;
 }
 
+interface PersistedSessionState {
+  workspaceRoot: string;
+  currentFilePath: string;
+  rawText: string;
+  activeBlockId: string | null;
+  cursorOffset: number;
+  sidebarOpen: boolean;
+  sidebarTab: SidebarTab;
+  scrollTop: number;
+  timestamp: number;
+}
+
+function loadSavedSession(): PersistedSessionState | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedSessionState;
+    if (parsed && typeof parsed.currentFilePath === 'string') {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+interface HistorySnapshot {
+  blocks: MarkdownBlock[];
+  rawText: string;
+  activeBlockId: string | null;
+  cursorOffset: number;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class EditorErrorBoundary extends React.Component<
+  { onRecover: () => void; children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { onRecover: () => void; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'Erreur inattendue de rendu',
+    };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-8 max-w-xl mx-auto my-12 rounded-2xl border shadow-lg space-y-4 text-sm">
+          <div className="font-semibold text-base text-red-500">
+            Récupération automatique de l&apos;éditeur
+          </div>
+          <p className="opacity-80 text-xs font-mono break-all">
+            {this.state.errorMessage}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              this.setState({ hasError: false, errorMessage: '' });
+              this.props.onRecover();
+            }}
+            className="px-4 py-2 rounded-lg font-medium text-xs text-white cursor-pointer"
+            style={{ backgroundColor: 'var(--primary-color)' }}
+          >
+            Restaurer la session d&apos;édition
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export const App: React.FC = () => {
+  const initialSession = useMemo(() => loadSavedSession(), []);
+
   const [preferences, setPreferences] = useState<CursivPreferences>(loadInitialPreferences);
-  const [workspaceRoot, setWorkspaceRoot] = useState<string>('/Workspace');
+  const [workspaceRoot, setWorkspaceRoot] = useState<string>(
+    () => initialSession?.workspaceRoot || '/Workspace'
+  );
   const [files, setFiles] = useState<FileEntryNode[]>([]);
   const [currentFilePath, setCurrentFilePath] = useState<string>(
-    '/Workspace/Bienvenue sur Cursiv.md'
+    () => initialSession?.currentFilePath || '/Workspace/Bienvenue sur Cursiv.md'
+  );
+  const [rawText, setRawText] = useState<string>(
+    () => initialSession?.rawText ?? DEFAULT_WELCOME_MARKDOWN
   );
   const [blocks, setBlocks] = useState<MarkdownBlock[]>(() =>
-    parseMarkdownToBlocks(DEFAULT_WELCOME_MARKDOWN)
+    parseMarkdownToBlocks(initialSession?.rawText ?? DEFAULT_WELCOME_MARKDOWN)
   );
-  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(
+    () => initialSession?.activeBlockId ?? null
+  );
+  const [liveCursorOffset, setLiveCursorOffset] = useState<number>(
+    () => initialSession?.cursorOffset ?? 0
+  );
+  const [externalCaretOffset, setExternalCaretOffset] = useState<number | null>(
+    () => initialSession?.cursorOffset ?? null
+  );
+  const [externalCaretVersion, setExternalCaretVersion] = useState<number>(0);
   const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [txtRichMode, setTxtRichMode] = useState<boolean>(false);
 
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => window.innerWidth >= 900);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('files');
+  // Image file viewer state
+  const [imageDataUrl, setImageDataUrl] = useState<string>('');
+  const [imageZoom, setImageZoom] = useState<number>(100);
+  const [imageDimensions, setImageDimensions] = useState<{ w: number; h: number } | null>(null);
+
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(
+    () => initialSession?.sidebarOpen ?? window.innerWidth >= 900
+  );
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>(
+    () => initialSession?.sidebarTab || 'files'
+  );
   const [autoRenameFilePath, setAutoRenameFilePath] = useState<string | null>(null);
   const [activeHeadingSlug, setActiveHeadingSlug] = useState<string>('');
   const [preferencesModalOpen, setPreferencesModalOpen] = useState<boolean>(false);
 
   // Source Code Mode cursor & scroll synchronization state
-  const [sourceCursorOffset, setSourceCursorOffset] = useState<number>(0);
+  const [sourceCursorOffset, setSourceCursorOffset] = useState<number>(
+    () => initialSession?.cursorOffset ?? 0
+  );
   const [sourceScrollRatio, setSourceScrollRatio] = useState<number>(0);
 
   // Export & Auto-Update notifications
@@ -140,39 +272,101 @@ export const App: React.FC = () => {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
 
-  // Document-wide Undo / Redo history (block snapshots, typing bursts coalesced)
-  const historyRef = useRef<{ past: MarkdownBlock[][]; future: MarkdownBlock[][] }>({
+  const currentFileMeta = useMemo(() => describeFilePath(currentFilePath), [currentFilePath]);
+  const isCurrentMarkdown = isMarkdownFilePath(currentFilePath);
+  const isCurrentImage = isImageFilePath(currentFilePath);
+  const isUsingBlockEditor =
+    !isCurrentImage &&
+    !preferences.sourceCodeMode &&
+    (isCurrentMarkdown || (currentFileMeta.category === 'plaintext' && txtRichMode));
+
+  // Document-wide Undo / Redo history with cursor & block restoration
+  const historyRef = useRef<{ past: HistorySnapshot[]; future: HistorySnapshot[] }>({
     past: [],
     future: [],
   });
-  const prevBlocksRef = useRef<MarkdownBlock[]>(blocks);
+  const currentSnapshotRef = useRef<HistorySnapshot>({
+    blocks,
+    rawText,
+    activeBlockId,
+    cursorOffset: liveCursorOffset,
+  });
   const skipHistoryRef = useRef<boolean>(false);
   const lastHistoryPushRef = useRef<number>(0);
 
-  const resetHistory = useCallback(() => {
-    historyRef.current = { past: [], future: [] };
-    skipHistoryRef.current = true;
-    lastHistoryPushRef.current = 0;
-  }, []);
+  const resetHistory = useCallback(
+    (initBlocks: MarkdownBlock[], initRaw: string, initBlockId: string | null = null) => {
+      historyRef.current = { past: [], future: [] };
+      currentSnapshotRef.current = {
+        blocks: initBlocks,
+        rawText: initRaw,
+        activeBlockId: initBlockId,
+        cursorOffset: 0,
+      };
+      skipHistoryRef.current = true;
+      lastHistoryPushRef.current = Date.now();
+    },
+    []
+  );
 
+  // Keep currentSnapshotRef cursor updated when user moves caret without editing text
   useEffect(() => {
-    const prev = prevBlocksRef.current;
-    if (prev === blocks) return;
-    prevBlocksRef.current = blocks;
+    currentSnapshotRef.current.activeBlockId = activeBlockId;
+    currentSnapshotRef.current.cursorOffset = liveCursorOffset;
+  }, [activeBlockId, liveCursorOffset]);
+
+  // Record Undo checkpoints intelligently (on structural change, block switch, word boundary, or 600ms elapsed)
+  useEffect(() => {
+    const prev = currentSnapshotRef.current;
+    if (prev.blocks === blocks && prev.rawText === rawText) return;
+
+    const nextSnap: HistorySnapshot = {
+      blocks,
+      rawText,
+      activeBlockId,
+      cursorOffset: liveCursorOffset,
+    };
+
     if (skipHistoryRef.current) {
       skipHistoryRef.current = false;
+      currentSnapshotRef.current = nextSnap;
       return;
     }
+
     const now = Date.now();
-    const structural = prev.length !== blocks.length;
+    const elapsed = now - lastHistoryPushRef.current;
+    const structural =
+      prev.blocks.length !== blocks.length || prev.activeBlockId !== activeBlockId;
+
+    // Detect if the user just typed a word boundary character (space, punctuation, newline, tab)
+    let wordBoundary = false;
+    if (activeBlockId) {
+      const prevBlock = prev.blocks.find((b) => b.id === activeBlockId);
+      const currBlock = blocks.find((b) => b.id === activeBlockId);
+      if (
+        prevBlock &&
+        currBlock &&
+        'text' in prevBlock &&
+        'text' in currBlock &&
+        Math.abs(currBlock.text.length - prevBlock.text.length) >= 1
+      ) {
+        const diffLen = Math.abs(currBlock.text.length - prevBlock.text.length);
+        const lastChar = currBlock.text[Math.max(0, liveCursorOffset - 1)] || '';
+        if (diffLen > 2 || /[\s.,;!?()[\]{}"'\t-]/.test(lastChar)) {
+          wordBoundary = elapsed > 140;
+        }
+      }
+    }
+
     const h = historyRef.current;
-    if (structural || now - lastHistoryPushRef.current > HISTORY_COALESCE_MS) {
+    if (h.past.length === 0 || structural || wordBoundary || elapsed >= HISTORY_COALESCE_MS) {
       h.past.push(prev);
       if (h.past.length > HISTORY_LIMIT) h.past.shift();
+      lastHistoryPushRef.current = now;
     }
     h.future = [];
-    lastHistoryPushRef.current = now;
-  }, [blocks]);
+    currentSnapshotRef.current = nextSnap;
+  }, [blocks, rawText, activeBlockId, liveCursorOffset]);
 
   const updatePreferences = useCallback((patch: Partial<CursivPreferences>) => {
     setPreferences((prev) => {
@@ -186,20 +380,73 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Apply dynamic CSS theme, discreet accent color & smooth caret speed
+  // Apply dynamic CSS theme, discreet accent color, smooth caret speed & Aqua water effect
   useEffect(() => {
     applyThemeCss(
       preferences.theme,
       preferences.customThemesCss,
       preferences.accentColor,
-      preferences.caretSmoothSpeed
+      preferences.caretSmoothSpeed,
+      {
+        waterOpacity: preferences.waterOpacity,
+        waterBlurPx: preferences.waterBlurPx,
+        waterRefraction: preferences.waterRefraction,
+        waterTint: preferences.waterTint,
+      }
     );
   }, [
     preferences.theme,
     preferences.customThemesCss,
     preferences.accentColor,
     preferences.caretSmoothSpeed,
+    preferences.waterOpacity,
+    preferences.waterBlurPx,
+    preferences.waterRefraction,
+    preferences.waterTint,
   ]);
+
+  // Persist session state continuously & on beforeunload so previous session is ALWAYS restored
+  const saveSessionToStorage = useCallback(() => {
+    try {
+      const state: PersistedSessionState = {
+        workspaceRoot,
+        currentFilePath,
+        rawText,
+        activeBlockId,
+        cursorOffset: liveCursorOffset,
+        sidebarOpen,
+        sidebarTab,
+        scrollTop: scrollContainerRef.current?.scrollTop ?? 0,
+        timestamp: Date.now(),
+      };
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [
+    workspaceRoot,
+    currentFilePath,
+    rawText,
+    activeBlockId,
+    liveCursorOffset,
+    sidebarOpen,
+    sidebarTab,
+  ]);
+
+  useEffect(() => {
+    saveSessionToStorage();
+  }, [saveSessionToStorage]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      saveSessionToStorage();
+      if (isDirty && !isImageFilePath(currentFilePath)) {
+        writeTextFile(currentFilePath, rawText).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [saveSessionToStorage, isDirty, currentFilePath, rawText]);
 
   // Ctrl + Mouse Wheel Page Scale (scales only the document sheet, never the window or sidebar)
   useEffect(() => {
@@ -261,26 +508,112 @@ export const App: React.FC = () => {
     });
   }, [preferences.githubUpdateRepo]);
 
-  // Load selected file
-  const handleSelectFile = useCallback(async (path: string) => {
-    try {
-      const content = await readTextFile(path);
-      const parsed = parseMarkdownToBlocks(content);
-      resetHistory();
-      setCurrentFilePath(path);
-      setBlocks(parsed);
-      setActiveBlockId(parsed[0]?.id || null);
-      setIsDirty(false);
-    } catch (err) {
-      setStatusBanner(`Erreur lecture : ${err instanceof Error ? err.message : String(err)}`);
+  // Load selected file (Markdown, Plaintext, Code, CSV, JSON, HTML, SVG, or Image)
+  const handleSelectFile = useCallback(
+    async (path: string, preserveSessionCursor = false) => {
+      try {
+        // Flush pending autosave for the previous file before switching
+        if (autosaveTimerRef.current) {
+          window.clearTimeout(autosaveTimerRef.current);
+          autosaveTimerRef.current = null;
+          if (isDirty && !isImageFilePath(currentFilePath)) {
+            await writeTextFile(currentFilePath, rawText).catch(() => {});
+          }
+        }
+
+        if (isImageFilePath(path)) {
+          const dataUrl = await readBinaryDataUrl(path);
+          setCurrentFilePath(path);
+          setImageDataUrl(dataUrl);
+          setImageZoom(100);
+          setImageDimensions(null);
+          setIsDirty(false);
+          return;
+        }
+
+        const content = await readTextFile(path);
+        const isMd = isMarkdownFilePath(path);
+        const parsed = isMd ? parseMarkdownToBlocks(content) : [];
+        resetHistory(parsed, content, preserveSessionCursor ? activeBlockId : parsed[0]?.id || null);
+        setCurrentFilePath(path);
+        setRawText(content);
+        if (isMd) {
+          setBlocks(parsed);
+          if (!preserveSessionCursor) {
+            setActiveBlockId(parsed[0]?.id || null);
+            setLiveCursorOffset(0);
+          }
+        } else {
+          setBlocks([]);
+          setActiveBlockId(null);
+          setSourceCursorOffset(0);
+          setSourceScrollRatio(0);
+        }
+        setIsDirty(false);
+      } catch (err) {
+        setStatusBanner(`Erreur lecture : ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [resetHistory, isDirty, currentFilePath, rawText, activeBlockId]
+  );
+
+  // Restore previous session file & scroll position on startup
+  useEffect(() => {
+    const targetPath = initialSession?.currentFilePath || currentFilePath;
+    if (isImageFilePath(targetPath)) {
+      readBinaryDataUrl(targetPath)
+        .then((url) => {
+          setImageDataUrl(url);
+        })
+        .catch(() => {});
+      return;
     }
-  }, [resetHistory]);
+
+    readTextFile(targetPath)
+      .then((diskContent) => {
+        // Prefer disk content if non-empty, or fallback to saved session rawText
+        const effectiveText =
+          diskContent && diskContent.length > 0
+            ? diskContent
+            : initialSession?.rawText || DEFAULT_WELCOME_MARKDOWN;
+        setRawText(effectiveText);
+        if (isMarkdownFilePath(targetPath)) {
+          const parsed = parseMarkdownToBlocks(effectiveText);
+          const restoredBlockId =
+            initialSession?.activeBlockId &&
+            parsed.some((b) => b.id === initialSession.activeBlockId)
+              ? initialSession.activeBlockId
+              : parsed[0]?.id || null;
+          resetHistory(parsed, effectiveText, restoredBlockId);
+          setBlocks(parsed);
+          setActiveBlockId(restoredBlockId);
+          if (typeof initialSession?.cursorOffset === 'number') {
+            setLiveCursorOffset(initialSession.cursorOffset);
+            setExternalCaretOffset(initialSession.cursorOffset);
+            setExternalCaretVersion((v) => v + 1);
+          }
+        } else {
+          resetHistory([], effectiveText, null);
+        }
+        if (initialSession?.scrollTop) {
+          requestAnimationFrame(() => {
+            if (scrollContainerRef.current) {
+              scrollContainerRef.current.scrollTop = initialSession.scrollTop;
+            }
+          });
+        }
+      })
+      .catch(() => {
+        // Keep session state already loaded in memory
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenWikiLinkOrFile = useCallback(
     (target: string) => {
       const cleanTarget = target.trim().replace(/^\[\[/, '').replace(/\]\]$/, '');
       const targetLower = cleanTarget.toLowerCase();
-      const targetWithExt = targetLower.endsWith('.md') ? targetLower : `${targetLower}.md`;
+      const targetWithExt = targetLower.includes('.') ? targetLower : `${targetLower}.md`;
 
       const findPath = (nodes: FileEntryNode[]): string | null => {
         for (const node of nodes) {
@@ -309,87 +642,107 @@ export const App: React.FC = () => {
       if (match) {
         handleSelectFile(match);
       } else {
-        setStatusBanner(`Note introuvable : "${cleanTarget}"`);
+        setStatusBanner(`Fichier introuvable : "${cleanTarget}"`);
       }
     },
     [files, handleSelectFile]
   );
 
-  // Load saved content of initial welcome file on startup so user edits are preserved
-  useEffect(() => {
-    readTextFile(currentFilePath)
-      .then((content) => {
-        if (content && content.trim().length > 0) {
-          resetHistory();
-          setBlocks(parseMarkdownToBlocks(content));
-        }
-      })
-      .catch(() => {
-        // fallback to default welcome markdown
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const markdownString = useMemo(() => serializeBlocksToMarkdown(blocks), [blocks]);
-  const outlineHeadings = useMemo(() => extractOutlineHeadings(blocks), [blocks]);
+  const outlineHeadings = useMemo(
+    () => (isUsingBlockEditor ? extractOutlineHeadings(blocks) : []),
+    [isUsingBlockEditor, blocks]
+  );
 
   // Immediate save (`Ctrl+S` or manual save)
   const handleSaveCurrentFile = useCallback(async () => {
+    if (isCurrentImage) return;
     try {
       if (autosaveTimerRef.current) {
         window.clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
       }
-      await writeTextFile(currentFilePath, markdownString);
+      const textToWrite = isUsingBlockEditor ? serializeBlocksToMarkdown(blocks) : rawText;
+      await writeTextFile(currentFilePath, textToWrite);
+      setRawText(textToWrite);
       setIsDirty(false);
+      saveSessionToStorage();
       refreshWorkspaceFiles();
       setStatusBanner(`Enregistré : ${currentFilePath.split('/').pop()}`);
       setTimeout(() => setStatusBanner(null), 2000);
     } catch (err) {
       setStatusBanner(`Erreur sauvegarde : ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [currentFilePath, markdownString, refreshWorkspaceFiles]);
+  }, [
+    isCurrentImage,
+    isUsingBlockEditor,
+    blocks,
+    rawText,
+    currentFilePath,
+    saveSessionToStorage,
+    refreshWorkspaceFiles,
+  ]);
 
-  // Debounced autosave (600ms) when blocks change
-  const scheduleAutosave = useCallback(
-    (filePath: string, nextBlocks: MarkdownBlock[]) => {
-      if (autosaveTimerRef.current) {
-        window.clearTimeout(autosaveTimerRef.current);
+  // Debounced autosave (500ms) for both Markdown blocks and raw text/code files
+  const scheduleAutosaveText = useCallback((filePath: string, nextText: string) => {
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = window.setTimeout(async () => {
+      try {
+        await writeTextFile(filePath, nextText);
+        setIsDirty(false);
+      } catch {
+        // ignore background autosave error
       }
-      autosaveTimerRef.current = window.setTimeout(async () => {
-        try {
-          await writeTextFile(filePath, serializeBlocksToMarkdown(nextBlocks));
-          setIsDirty(false);
-        } catch {
-          // ignore background autosave error
-        }
-      }, 600);
+    }, 500);
+  }, []);
+
+  const updateBlocksAndSync = useCallback(
+    (nextBlocks: MarkdownBlock[]) => {
+      const serialized = serializeBlocksToMarkdown(nextBlocks);
+      setBlocks(nextBlocks);
+      setRawText(serialized);
+      setIsDirty(true);
+      scheduleAutosaveText(currentFilePath, serialized);
     },
-    []
+    [currentFilePath, scheduleAutosaveText]
   );
 
   // Toggle Source Code Mode (`Ctrl+/`) while preserving exact scroll & cursor offset
   const handleToggleSourceMode = useCallback(() => {
+    if (!isCurrentMarkdown) {
+      if (currentFileMeta.category === 'plaintext') {
+        setTxtRichMode((prev) => {
+          const nextRich = !prev;
+          if (nextRich) {
+            setBlocks(parseMarkdownToBlocks(rawText));
+          } else {
+            setRawText(serializeBlocksToMarkdown(blocks));
+          }
+          return nextRich;
+        });
+      }
+      return;
+    }
+
     if (!preferences.sourceCodeMode) {
-      // Transitioning WYSIWYM -> Source Code Mode
       const scroller = scrollContainerRef.current;
       if (scroller) {
         const maxScroll = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
         setSourceScrollRatio(scroller.scrollTop / maxScroll);
       }
-      // Compute character offset corresponding to activeBlockId
       if (activeBlockId) {
         const idx = blocks.findIndex((b) => b.id === activeBlockId);
         if (idx > 0) {
           const priorMarkdown = serializeBlocksToMarkdown(blocks.slice(0, idx));
-          setSourceCursorOffset(priorMarkdown.length);
+          setSourceCursorOffset(priorMarkdown.length + liveCursorOffset);
         } else {
-          setSourceCursorOffset(0);
+          setSourceCursorOffset(liveCursorOffset);
         }
       }
       updatePreferences({ sourceCodeMode: true });
     } else {
-      // Transitioning Source Code Mode -> WYSIWYM
+      setBlocks(parseMarkdownToBlocks(rawText));
       updatePreferences({ sourceCodeMode: false });
       requestAnimationFrame(() => {
         const scroller = scrollContainerRef.current;
@@ -400,68 +753,107 @@ export const App: React.FC = () => {
       });
     }
   }, [
+    isCurrentMarkdown,
+    currentFileMeta.category,
     preferences.sourceCodeMode,
     activeBlockId,
     blocks,
+    liveCursorOffset,
+    rawText,
     sourceScrollRatio,
     updatePreferences,
   ]);
 
-  const handleCreateNewFile = useCallback(async () => {
-    const existingNames = new Set(files.map((f) => f.name.toLowerCase()));
-    let candidate = 'Nouveau document.md';
-    let counter = 2;
-    while (existingNames.has(candidate.toLowerCase())) {
-      candidate = `Nouveau document ${counter}.md`;
-      counter++;
-    }
-    const newPath = `${workspaceRoot.replace(/\/$/, '')}/${candidate}`;
-    try {
-      await createFileOrDir(newPath, false);
-      await refreshWorkspaceFiles();
-      await handleSelectFile(newPath);
-      setSidebarOpen(true);
-      setSidebarTab('files');
-      setAutoRenameFilePath(newPath);
-    } catch (err) {
-      setStatusBanner(`Erreur création : ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [files, workspaceRoot, refreshWorkspaceFiles, handleSelectFile]);
+  const handleCreateNewFile = useCallback(
+    async (ext = '.md') => {
+      const cleanExt = ext.startsWith('.') ? ext : `.${ext}`;
+      const baseStem =
+        cleanExt === '.md'
+          ? 'Nouveau document'
+          : cleanExt === '.txt'
+          ? 'Nouvelle note'
+          : 'Nouveau fichier';
+      const existingNames = new Set(files.map((f) => f.name.toLowerCase()));
+      let candidate = `${baseStem}${cleanExt}`;
+      let counter = 2;
+      while (existingNames.has(candidate.toLowerCase())) {
+        candidate = `${baseStem} ${counter}${cleanExt}`;
+        counter++;
+      }
+      const newPath = `${workspaceRoot.replace(/\/$/, '')}/${candidate}`;
+      try {
+        await createFileOrDir(newPath, false);
+        await refreshWorkspaceFiles();
+        await handleSelectFile(newPath);
+        setSidebarOpen(true);
+        setSidebarTab('files');
+        setAutoRenameFilePath(newPath);
+      } catch (err) {
+        setStatusBanner(`Erreur création : ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [files, workspaceRoot, refreshWorkspaceFiles, handleSelectFile]
+  );
 
   const handleRenameFile = useCallback(
     async (oldPath: string, newName: string) => {
       const trimmed = newName.trim();
       if (!trimmed) return;
-      const finalName = trimmed.endsWith('.md') ? trimmed : `${trimmed}.md`;
+      const oldName = oldPath.split('/').pop() || '';
+      const oldDotIdx = oldName.lastIndexOf('.');
+      const oldExt = oldDotIdx > 0 ? oldName.slice(oldDotIdx) : '.md';
+
+      // Preserve user's explicit extension if they typed one (e.g. notes.txt, script.py, .env)
+      const hasExplicitExtension =
+        trimmed.startsWith('.') || /\.[a-z0-9_-]{1,12}$/i.test(trimmed);
+      const finalName = hasExplicitExtension ? trimmed : `${trimmed}${oldExt}`;
+
       const parent = oldPath.slice(0, oldPath.lastIndexOf('/'));
       const newPath = `${parent}/${finalName}`;
       if (newPath === oldPath) return;
 
       try {
         await renameFilePath(oldPath, newPath);
-        const cleanTitle = finalName.replace(/\.md$/i, '');
+        const cleanTitle = finalName.replace(/\.[^.]+$/, '');
 
         if (currentFilePath === oldPath) {
           setCurrentFilePath(newPath);
-          setBlocks((prev) => {
-            if (
-              prev.length > 0 &&
-              prev[0].type === 'heading' &&
-              prev[0].level === 1 &&
-              (prev[0].text.startsWith('Nouveau document') ||
-                prev[0].text === oldPath.split('/').pop()?.replace(/\.md$/i, ''))
-            ) {
-              const updated = [...prev];
-              updated[0] = {
-                ...prev[0],
-                text: cleanTitle,
-                slug: slugifyHeading(cleanTitle),
-              };
-              writeTextFile(newPath, serializeBlocksToMarkdown(updated));
-              return updated;
+          const nowMd = isMarkdownFilePath(newPath);
+          const wasMd = isMarkdownFilePath(oldPath);
+
+          if (nowMd && wasMd) {
+            setBlocks((prev) => {
+              if (
+                prev.length > 0 &&
+                prev[0].type === 'heading' &&
+                prev[0].level === 1 &&
+                (prev[0].text.startsWith('Nouveau document') ||
+                  prev[0].text === oldName.replace(/\.[^.]+$/, ''))
+              ) {
+                const updated = [...prev];
+                updated[0] = {
+                  ...prev[0],
+                  text: cleanTitle,
+                  slug: slugifyHeading(cleanTitle),
+                };
+                const nextMd = serializeBlocksToMarkdown(updated);
+                setRawText(nextMd);
+                writeTextFile(newPath, nextMd);
+                return updated;
+              }
+              return prev;
+            });
+          } else if (!nowMd && wasMd) {
+            // Converted from .md to .txt/.py/.json/etc. -> if it only had the starter "# Nouveau document", replace with starter template for the new extension
+            const trimmedRaw = rawText.trim();
+            if (/^#\s+Nouveau (document|fichier|note)/i.test(trimmedRaw)) {
+              const starter = getStarterContentForPath(newPath);
+              setRawText(starter);
+              await writeTextFile(newPath, starter);
             }
-            return prev;
-          });
+          } else if (nowMd && !wasMd) {
+            setBlocks(parseMarkdownToBlocks(rawText));
+          }
         }
         await refreshWorkspaceFiles();
       } catch (err) {
@@ -470,7 +862,7 @@ export const App: React.FC = () => {
         );
       }
     },
-    [currentFilePath, refreshWorkspaceFiles]
+    [currentFilePath, rawText, refreshWorkspaceFiles]
   );
 
   const handleDuplicateFile = useCallback(
@@ -495,7 +887,7 @@ export const App: React.FC = () => {
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        title: 'Ouvrir un dossier de notes Markdown dans Cursiv',
+        title: 'Ouvrir un dossier de travail dans Cursiv',
       });
       if (typeof selected === 'string' && selected) {
         setWorkspaceRoot(selected.replace(/\\/g, '/'));
@@ -522,6 +914,7 @@ export const App: React.FC = () => {
           const md = await runPandocImport(selected, preferences.pandocPath);
           const parsed = parseMarkdownToBlocks(md);
           setBlocks(parsed);
+          setRawText(md);
           setIsDirty(true);
           setStatusBanner(`Import Pandoc réussi depuis ${selected.split(/[/\\]/).pop()}`);
         } catch (err) {
@@ -539,10 +932,11 @@ export const App: React.FC = () => {
     async (format: LastExportConfig['format'], targetPathOverride?: string) => {
       try {
         const currentFileName = currentFilePath.split('/').pop() || 'Document.md';
+        const exportBlocks = isUsingBlockEditor ? blocks : parseMarkdownToBlocks(rawText);
         const result = await executeDocumentExport({
           format,
           docTitle: currentFileName,
-          blocks,
+          blocks: exportBlocks,
           sheetElement: sheetRef.current,
           preferences,
           targetPathOverride,
@@ -554,26 +948,35 @@ export const App: React.FC = () => {
         setStatusBanner(`Erreur Export : ${err instanceof Error ? err.message : String(err)}`);
       }
     },
-    [currentFilePath, blocks, preferences]
+    [currentFilePath, isUsingBlockEditor, blocks, rawText, preferences]
   );
 
   const applyHistorySnapshot = useCallback(
-    (snapshot: MarkdownBlock[]) => {
+    (snapshot: HistorySnapshot) => {
       skipHistoryRef.current = true;
-      lastHistoryPushRef.current = 0;
-      setBlocks(snapshot);
-      setActiveBlockId((id) => (id && snapshot.some((b) => b.id === id) ? id : null));
+      lastHistoryPushRef.current = Date.now();
+      currentSnapshotRef.current = snapshot;
+      setBlocks(snapshot.blocks);
+      setRawText(snapshot.rawText);
+      const targetBlockId =
+        snapshot.activeBlockId && snapshot.blocks.some((b) => b.id === snapshot.activeBlockId)
+          ? snapshot.activeBlockId
+          : snapshot.blocks[0]?.id || null;
+      setActiveBlockId(targetBlockId);
+      setLiveCursorOffset(snapshot.cursorOffset);
+      setExternalCaretOffset(snapshot.cursorOffset);
+      setExternalCaretVersion((v) => v + 1);
       setIsDirty(true);
-      scheduleAutosave(currentFilePath, snapshot);
+      scheduleAutosaveText(currentFilePath, snapshot.rawText);
     },
-    [currentFilePath, scheduleAutosave]
+    [currentFilePath, scheduleAutosaveText]
   );
 
   const handleUndo = useCallback(() => {
     const h = historyRef.current;
     const previous = h.past.pop();
     if (!previous) return;
-    h.future.push(prevBlocksRef.current);
+    h.future.push(currentSnapshotRef.current);
     applyHistorySnapshot(previous);
   }, [applyHistorySnapshot]);
 
@@ -581,20 +984,19 @@ export const App: React.FC = () => {
     const h = historyRef.current;
     const nextSnap = h.future.pop();
     if (!nextSnap) return;
-    h.past.push(prevBlocksRef.current);
+    h.past.push(currentSnapshotRef.current);
     applyHistorySnapshot(nextSnap);
   }, [applyHistorySnapshot]);
 
   const openFind = useCallback(
     (withReplace: boolean) => {
-      if (preferences.sourceCodeMode) return;
-      // Leave edit mode so every block is rendered (and therefore searchable / highlightable)
+      if (!isUsingBlockEditor) return;
       setActiveBlockId(null);
       setFindOpen(true);
       if (withReplace) setFindReplaceMode(true);
       setFindFocusSignal((n) => n + 1);
     },
-    [preferences.sourceCodeMode]
+    [isUsingBlockEditor]
   );
 
   const handleReplaceOne = useCallback(
@@ -608,24 +1010,20 @@ export const App: React.FC = () => {
         caseSensitive
       );
       if (res.replaced === 0) return;
-      setBlocks(res.blocks);
-      setIsDirty(true);
-      scheduleAutosave(currentFilePath, res.blocks);
+      updateBlocksAndSync(res.blocks);
     },
-    [blocks, currentFilePath, scheduleAutosave]
+    [blocks, updateBlocksAndSync]
   );
 
   const handleReplaceAll = useCallback(
     (query: string, replacement: string, caseSensitive: boolean): number => {
       const res = replaceAllInBlocks(blocks, query, replacement, caseSensitive);
       if (res.replaced > 0) {
-        setBlocks(res.blocks);
-        setIsDirty(true);
-        scheduleAutosave(currentFilePath, res.blocks);
+        updateBlocksAndSync(res.blocks);
       }
       return res.replaced;
     },
-    [blocks, currentFilePath, scheduleAutosave]
+    [blocks, updateBlocksAndSync]
   );
 
   // Capture-phase shortcuts: Undo/Redo, Find/Replace, Quick Switcher & Command Palette
@@ -640,7 +1038,7 @@ export const App: React.FC = () => {
         !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && !inSheet;
 
       // Undo / Redo — CodeMirror blocks and side inputs keep their own native history
-      if ((key === 'z' || key === 'y') && !preferences.sourceCodeMode && !inCodeMirror && !isFieldOutsideSheet) {
+      if ((key === 'z' || key === 'y') && isUsingBlockEditor && !inCodeMirror && !isFieldOutsideSheet) {
         e.preventDefault();
         e.stopPropagation();
         if (key === 'y' || (key === 'z' && e.shiftKey)) handleRedo();
@@ -648,13 +1046,13 @@ export const App: React.FC = () => {
         return;
       }
 
-      if (key === 'f' && !e.shiftKey && !inCodeMirror) {
+      if (key === 'f' && !e.shiftKey && !inCodeMirror && isUsingBlockEditor) {
         e.preventDefault();
         e.stopPropagation();
         openFind(false);
         return;
       }
-      if (key === 'h' && !e.shiftKey && !inCodeMirror) {
+      if (key === 'h' && !e.shiftKey && !inCodeMirror && isUsingBlockEditor) {
         e.preventDefault();
         e.stopPropagation();
         openFind(true);
@@ -676,9 +1074,9 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDownCapture, true);
     return () => window.removeEventListener('keydown', onKeyDownCapture, true);
-  }, [handleUndo, handleRedo, openFind, preferences.sourceCodeMode]);
+  }, [handleUndo, handleRedo, openFind, isUsingBlockEditor]);
 
-  // Global Windows Keyboard Shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+D, Ctrl+P, Ctrl+, , F2, F8, F9, Ctrl+1..6, Ctrl+0, Ctrl+T, Ctrl+/, Ctrl+Shift+L)
+  // Global Windows Keyboard Shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === '/') {
@@ -713,7 +1111,7 @@ export const App: React.FC = () => {
       }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        handleCreateNewFile();
+        handleCreateNewFile('.md');
         return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'o') {
@@ -741,35 +1139,31 @@ export const App: React.FC = () => {
         setPreferencesModalOpen((v) => !v);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[0-6]$/.test(e.key)) {
+      if (isUsingBlockEditor && (e.ctrlKey || e.metaKey) && !e.shiftKey && /^[0-6]$/.test(e.key)) {
         if (!activeBlockId) return;
         e.preventDefault();
         const lvl = Number(e.key);
-        setBlocks((prev) => {
-          const next = prev.map((b): MarkdownBlock => {
-            if (b.id !== activeBlockId) return b;
-            const currentText =
-              b.type === 'heading' || b.type === 'paragraph' || b.type === 'blockquote'
-                ? b.text
-                : '';
-            if (lvl === 0) {
-              return { id: b.id, type: 'paragraph', text: currentText };
-            }
-            return {
-              id: b.id,
-              type: 'heading',
-              level: lvl as 1 | 2 | 3 | 4 | 5 | 6,
-              text: currentText || 'Titre',
-              slug: slugifyHeading(currentText || 'Titre'),
-            };
-          });
-          scheduleAutosave(currentFilePath, next);
-          return next;
+        const next = blocks.map((b): MarkdownBlock => {
+          if (b.id !== activeBlockId) return b;
+          const currentText =
+            b.type === 'heading' || b.type === 'paragraph' || b.type === 'blockquote'
+              ? b.text
+              : '';
+          if (lvl === 0) {
+            return { id: b.id, type: 'paragraph', text: currentText };
+          }
+          return {
+            id: b.id,
+            type: 'heading',
+            level: lvl as 1 | 2 | 3 | 4 | 5 | 6,
+            text: currentText || 'Titre',
+            slug: slugifyHeading(currentText || 'Titre'),
+          };
         });
-        setIsDirty(true);
+        updateBlocksAndSync(next);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {
+      if (isUsingBlockEditor && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {
         e.preventDefault();
         const tblBlock: MarkdownBlock = {
           id: nextBlockId('tbl'),
@@ -781,13 +1175,8 @@ export const App: React.FC = () => {
             ['Valeur A2', 'Valeur B2', 'Valeur C2'],
           ],
         };
-        setBlocks((prev) => {
-          const next = [...prev, tblBlock];
-          scheduleAutosave(currentFilePath, next);
-          return next;
-        });
+        updateBlocksAndSync([...blocks, tblBlock]);
         setActiveBlockId(tblBlock.id);
-        setIsDirty(true);
       }
     };
 
@@ -800,7 +1189,9 @@ export const App: React.FC = () => {
     handleOpenFolderDialog,
     handleDuplicateFile,
     handleExportDocument,
-    scheduleAutosave,
+    updateBlocksAndSync,
+    isUsingBlockEditor,
+    blocks,
     activeBlockId,
     currentFilePath,
     preferences.focusMode,
@@ -832,13 +1223,19 @@ export const App: React.FC = () => {
 
   const paletteCommands: PaletteCommand[] = switcherOpen
     ? [
-        { id: 'new', label: 'Nouveau document', shortcut: 'Ctrl+N', run: handleCreateNewFile },
+        { id: 'new-md', label: 'Nouveau document Markdown (.md)', shortcut: 'Ctrl+N', run: () => handleCreateNewFile('.md') },
+        { id: 'new-txt', label: 'Nouveau fichier texte (.txt)', run: () => handleCreateNewFile('.txt') },
+        { id: 'new-json', label: 'Nouveau fichier JSON (.json)', run: () => handleCreateNewFile('.json') },
+        { id: 'new-csv', label: 'Nouvelle feuille CSV (.csv)', run: () => handleCreateNewFile('.csv') },
+        { id: 'new-py', label: 'Nouveau script Python (.py)', run: () => handleCreateNewFile('.py') },
+        { id: 'new-ts', label: 'Nouveau fichier TypeScript (.ts)', run: () => handleCreateNewFile('.ts') },
+        { id: 'new-html', label: 'Nouvelle page HTML (.html)', run: () => handleCreateNewFile('.html') },
         { id: 'save', label: 'Enregistrer', shortcut: 'Ctrl+S', run: handleSaveCurrentFile },
         { id: 'open-folder', label: 'Ouvrir un dossier…', shortcut: 'Ctrl+O', run: handleOpenFolderDialog },
-        { id: 'duplicate', label: 'Dupliquer le document', shortcut: 'Ctrl+D', run: () => handleDuplicateFile(currentFilePath) },
+        { id: 'duplicate', label: 'Dupliquer le fichier', shortcut: 'Ctrl+D', run: () => handleDuplicateFile(currentFilePath) },
         {
           id: 'rename',
-          label: 'Renommer le document',
+          label: 'Renommer ou changer l’extension du fichier',
           shortcut: 'F2',
           run: () => {
             setSidebarOpen(true);
@@ -882,14 +1279,43 @@ export const App: React.FC = () => {
       ]
     : [];
 
+  const refractionScale = Math.round(((preferences.waterRefraction ?? 35) / 100) * 18);
+
   return (
     <div
-      className="h-screen w-screen flex flex-col overflow-hidden"
+      className="cursiv-app-shell h-screen w-screen flex flex-col overflow-hidden relative"
       style={{
         backgroundColor: 'var(--bg-color)',
         color: 'var(--text-color)',
       }}
     >
+      {/* Underwater SVG Filter & Caustics Overlay when Aqua Theme is active */}
+      {preferences.theme === 'aqua' && (
+        <>
+          <svg className="hidden" aria-hidden="true">
+            <defs>
+              <filter id="cursiv-water-filter" x="-10%" y="-10%" width="120%" height="120%">
+                <feTurbulence
+                  type="fractalNoise"
+                  baseFrequency="0.012 0.018"
+                  numOctaves="2"
+                  seed="7"
+                  result="waterNoise"
+                />
+                <feDisplacementMap
+                  in="SourceGraphic"
+                  in2="waterNoise"
+                  scale={refractionScale}
+                  xChannelSelector="R"
+                  yChannelSelector="G"
+                />
+              </filter>
+            </defs>
+          </svg>
+          <div className="cursiv-aqua-caustics" />
+        </>
+      )}
+
       {/* Ultra-minimalist borderless Titlebar fused with document sheet */}
       <Titlebar
         currentFileName={currentFileName}
@@ -898,7 +1324,7 @@ export const App: React.FC = () => {
         preferences={preferences}
         lastExportConfig={lastExportConfig}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        onNewFile={handleCreateNewFile}
+        onNewFile={(ext) => handleCreateNewFile(ext || '.md')}
         onSaveFile={handleSaveCurrentFile}
         onImportPandocFile={handleImportPandocFile}
         onExportDocument={(fmt) => handleExportDocument(fmt)}
@@ -944,8 +1370,8 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Main Workspace Container: Sidebar + Zero-Split-Screen Editor */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      {/* Main Workspace Container: Sidebar + Universal Editor */}
+      <div className="flex-1 flex min-h-0 overflow-hidden relative z-10">
         <Sidebar
           isOpen={sidebarOpen}
           activeTab={sidebarTab}
@@ -959,8 +1385,8 @@ export const App: React.FC = () => {
           customWidth={preferences.sidebarWidth}
           onCustomWidthChange={(width) => updatePreferences({ sidebarWidth: width })}
           onTabChange={setSidebarTab}
-          onSelectFile={handleSelectFile}
-          onCreateFile={handleCreateNewFile}
+          onSelectFile={(p) => handleSelectFile(p)}
+          onCreateFile={(ext) => handleCreateNewFile(ext || '.md')}
           onRenameFile={handleRenameFile}
           onClearAutoRename={() => setAutoRenameFilePath(null)}
           onDuplicateFile={handleDuplicateFile}
@@ -977,55 +1403,143 @@ export const App: React.FC = () => {
           onOpenFolderDialog={handleOpenFolderDialog}
         />
 
-        {/* Main Writing Sheet (WYSIWYM or Synchronized Source Code Mode) */}
+        {/* Main Writing Sheet (WYSIWYM, Universal Code/Data Editor, or Image Viewer) */}
         <main
           ref={scrollContainerRef}
           className="flex-1 h-full overflow-y-auto relative"
         >
-          {preferences.sourceCodeMode ? (
-            <SourceCodeEditor
-              markdownText={markdownString}
-              initialCursorOffset={sourceCursorOffset}
-              initialScrollRatio={sourceScrollRatio}
-              onChange={(nextMd, cursor, ratio) => {
-                setSourceCursorOffset(cursor);
-                setSourceScrollRatio(ratio);
-                const parsed = parseMarkdownToBlocks(nextMd);
-                setBlocks(parsed);
-                setIsDirty(true);
-                scheduleAutosave(currentFilePath, parsed);
-              }}
-              onExitSourceMode={handleToggleSourceMode}
-            />
-          ) : (
-            <WysiwymEditor
-              blocks={blocks}
-              activeBlockId={activeBlockId}
-              preferences={preferences}
-              currentFilePath={currentFilePath}
-              sheetRef={sheetRef}
-              scrollContainerRef={scrollContainerRef}
-              onChangeBlocks={(nextBlocks) => {
-                setBlocks(nextBlocks);
-                setIsDirty(true);
-                scheduleAutosave(currentFilePath, nextBlocks);
-              }}
-              onSelectBlock={(blockId) => setActiveBlockId(blockId)}
-              onActiveHeadingSlugChange={setActiveHeadingSlug}
-              onOpenFile={handleOpenWikiLinkOrFile}
-            />
-          )}
+          <EditorErrorBoundary
+            onRecover={() => {
+              const recovered = parseMarkdownToBlocks(rawText || DEFAULT_WELCOME_MARKDOWN);
+              setBlocks(recovered);
+              setActiveBlockId(null);
+            }}
+          >
+            {isCurrentImage ? (
+              <div className="max-w-4xl mx-auto px-8 py-10 flex flex-col items-center gap-5">
+                <div
+                  className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border text-xs"
+                  style={{
+                    backgroundColor: 'var(--sidebar-bg-color)',
+                    borderColor: 'var(--border-color)',
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold">{currentFileName}</span>
+                    {imageDimensions && (
+                      <span className="opacity-65 font-mono">
+                        {imageDimensions.w} × {imageDimensions.h} px
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom((z) => Math.max(25, z - 25))}
+                      className="px-2 py-1 rounded border hover:bg-black/5 cursor-pointer font-mono"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      -25%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom(100)}
+                      className="px-2.5 py-1 rounded border hover:bg-black/5 cursor-pointer font-mono"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      {imageZoom}%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom((z) => Math.min(400, z + 25))}
+                      className="px-2 py-1 rounded border hover:bg-black/5 cursor-pointer font-mono"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      +25%
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  className="w-full min-h-[420px] rounded-2xl border p-6 flex items-center justify-center overflow-auto"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    backgroundImage:
+                      'repeating-conic-gradient(rgba(128,128,128,0.1) 0% 25%, transparent 0% 50%)',
+                    backgroundSize: '20px 20px',
+                  }}
+                >
+                  {imageDataUrl ? (
+                    <img
+                      src={imageDataUrl}
+                      alt={currentFileName}
+                      onLoad={(e) => {
+                        const img = e.currentTarget;
+                        setImageDimensions({ w: img.naturalWidth, h: img.naturalHeight });
+                      }}
+                      style={{
+                        width: `${imageZoom}%`,
+                        maxWidth: imageZoom === 100 ? '100%' : 'none',
+                      }}
+                      className="rounded-lg shadow-lg transition-all duration-150"
+                    />
+                  ) : (
+                    <span className="text-xs opacity-60">Chargement de l&apos;image...</span>
+                  )}
+                </div>
+              </div>
+            ) : !isUsingBlockEditor ? (
+              <SourceCodeEditor
+                markdownText={rawText}
+                filePath={currentFilePath}
+                initialCursorOffset={sourceCursorOffset}
+                initialScrollRatio={sourceScrollRatio}
+                isStandaloneFile={!isCurrentMarkdown}
+                onChange={(nextText, cursor, ratio) => {
+                  setSourceCursorOffset(cursor);
+                  setSourceScrollRatio(ratio);
+                  setRawText(nextText);
+                  if (isCurrentMarkdown) {
+                    setBlocks(parseMarkdownToBlocks(nextText));
+                  }
+                  setIsDirty(true);
+                  scheduleAutosaveText(currentFilePath, nextText);
+                }}
+                onExitSourceMode={
+                  isCurrentMarkdown || currentFileMeta.category === 'plaintext'
+                    ? handleToggleSourceMode
+                    : undefined
+                }
+              />
+            ) : (
+              <WysiwymEditor
+                blocks={blocks}
+                activeBlockId={activeBlockId}
+                preferences={preferences}
+                currentFilePath={currentFilePath}
+                sheetRef={sheetRef}
+                scrollContainerRef={scrollContainerRef}
+                externalCaretOffset={externalCaretOffset}
+                externalCaretVersion={externalCaretVersion}
+                onChangeBlocks={updateBlocksAndSync}
+                onSelectBlock={(blockId) => setActiveBlockId(blockId)}
+                onActiveHeadingSlugChange={setActiveHeadingSlug}
+                onOpenFile={handleOpenWikiLinkOrFile}
+                onCursorOffsetChange={(off) => setLiveCursorOffset(off ?? 0)}
+              />
+            )}
+          </EditorErrorBoundary>
         </main>
       </div>
 
-      {/* Bottom-right Subtle Status Bar (Word Count, Reading Time, Selection Stats, Mode Indicators) */}
+      {/* Bottom-right Subtle Status Bar */}
       <StatusBar
-        markdownText={markdownString}
+        markdownText={rawText}
         readingSpeedWpm={preferences.readingSpeedWpm}
         pageZoom={preferences.pageZoom}
         focusMode={preferences.focusMode}
         typewriterMode={preferences.typewriterMode}
-        sourceCodeMode={preferences.sourceCodeMode}
+        sourceCodeMode={!isUsingBlockEditor}
         onResetPageZoom={() => updatePreferences({ pageZoom: 100 })}
         onToggleFocusMode={() =>
           updatePreferences({ focusMode: !preferences.focusMode })
@@ -1037,7 +1551,7 @@ export const App: React.FC = () => {
       />
 
       {/* Find & Replace bar (Ctrl+F / Ctrl+H) */}
-      {!preferences.sourceCodeMode && (
+      {isUsingBlockEditor && (
         <FindReplaceBar
           isOpen={findOpen}
           replaceMode={findReplaceMode}
@@ -1062,7 +1576,7 @@ export const App: React.FC = () => {
         workspaceRoot={workspaceRoot}
         currentFilePath={currentFilePath}
         commands={paletteCommands}
-        onOpenFile={handleSelectFile}
+        onOpenFile={(p) => handleSelectFile(p)}
         onClose={() => setSwitcherOpen(false)}
       />
 

@@ -1,0 +1,20 @@
+/* Cursiv Theme: Aqua (Cristal d'Eau & Réfraction Subaquatique) */
+:root {
+  --bg-color: rgba(14, 34, 53, 0.72);
+  --text-color: #ecfeff;
+  --md-char-color: #67e8f9;
+  --meta-content-color: #99f6e4;
+  --primary-color: #22d3ee;
+  --border-color: rgba(103, 232, 249, 0.24);
+  --sidebar-bg-color: rgba(9, 24, 39, 0.62);
+  --sidebar-text-color: #cffafe;
+  --code-bg-color: rgba(7, 20, 34, 0.64);
+  --table-alt-bg: rgba(14, 44, 68, 0.45);
+  --blockquote-border: #06b6d4;
+  --blockquote-text: #a5f3fc;
+  --highlight-bg: rgba(34, 211, 238, 0.25);
+  --sequence-theme: simple;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}

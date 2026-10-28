@@ -1,4 +1,6 @@
-export type BuiltInThemeId = 'github' | 'night' | 'newsprint' | 'pixyll' | 'whitey' | 'gothic';
+export type BuiltInThemeId = 'github' | 'night' | 'newsprint' | 'pixyll' | 'whitey' | 'gothic' | 'aqua';
+
+export type WaterTintPreset = 'lagoon' | 'abyss' | 'crystal' | 'emerald';
 
 export type EquationNumberingMode = 'off' | 'ams' | 'all';
 
@@ -37,6 +39,10 @@ export interface CursivPreferences {
   githubUpdateRepo: string;
   showHiddenFiles: boolean;
   showNonMarkdownFiles: boolean;
+  waterOpacity: number;
+  waterBlurPx: number;
+  waterRefraction: number;
+  waterTint: WaterTintPreset;
 }
 
 export type TableAlignment = 'left' | 'center' | 'right';

@@ -14,6 +14,7 @@ import {
   CloudUploadProvider,
   CursivPreferences,
   EquationNumberingMode,
+  WaterTintPreset,
 } from '../types/editor';
 import { BUILTIN_THEMES, DISCREET_ACCENT_PRESETS } from '../utils/themeManager';
 import { detectPandocBinary, PandocStatus } from '../utils/tauriBridge';
@@ -111,7 +112,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           </div>
 
           <div className="text-[11px] opacity-65 px-2 leading-relaxed">
-            <div className="font-semibold">Cursiv. v1.14.0</div>
+            <div className="font-semibold">Cursiv. v1.17.0</div>
             <div>Par Djaël Mola · Licence MIT</div>
           </div>
         </div>
@@ -315,6 +316,162 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
                       >
                         820px
                       </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t" style={{ borderColor: 'var(--border-color)' }} />
+
+                {/* Underwater Glass & Transparency (Aqua Theme) */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold flex items-center gap-2">
+                        <span>Thème Transparent &amp; Effet Cristal d&apos;Eau (Aqua)</span>
+                        {preferences.theme === 'aqua' && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                            style={{
+                              backgroundColor:
+                                'color-mix(in srgb, var(--primary-color) 16%, transparent)',
+                              color: 'var(--primary-color)',
+                            }}
+                          >
+                            Actif
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ color: 'var(--meta-content-color)' }}>
+                        Effet visuel subaquatique avec transparence, flou de profondeur et réfraction optique
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdatePreferences({
+                          theme: preferences.theme === 'aqua' ? 'github' : 'aqua',
+                        })
+                      }
+                      className="px-3 py-1.5 rounded-lg border font-medium cursor-pointer transition-colors"
+                      style={{
+                        borderColor:
+                          preferences.theme === 'aqua'
+                            ? 'var(--primary-color)'
+                            : 'var(--border-color)',
+                        backgroundColor:
+                          preferences.theme === 'aqua'
+                            ? 'color-mix(in srgb, var(--primary-color) 15%, transparent)'
+                            : 'transparent',
+                        color:
+                          preferences.theme === 'aqua' ? 'var(--primary-color)' : 'inherit',
+                      }}
+                    >
+                      {preferences.theme === 'aqua'
+                        ? 'Désactiver le thème Aqua'
+                        : 'Activer le thème Aqua'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    <div
+                      className="p-3 rounded-xl border space-y-1.5"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      <div className="flex justify-between font-medium">
+                        <span>Opacité de l&apos;eau</span>
+                        <span className="font-mono">{preferences.waterOpacity ?? 72}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={25}
+                        max={95}
+                        step={1}
+                        value={preferences.waterOpacity ?? 72}
+                        onChange={(e) =>
+                          onUpdatePreferences({
+                            theme: 'aqua',
+                            waterOpacity: Number(e.target.value),
+                          })
+                        }
+                        className="w-full cursor-pointer"
+                      />
+                    </div>
+
+                    <div
+                      className="p-3 rounded-xl border space-y-1.5"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      <div className="flex justify-between font-medium">
+                        <span>Flou subaquatique (Blur)</span>
+                        <span className="font-mono">{preferences.waterBlurPx ?? 18} px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={44}
+                        step={1}
+                        value={preferences.waterBlurPx ?? 18}
+                        onChange={(e) =>
+                          onUpdatePreferences({
+                            theme: 'aqua',
+                            waterBlurPx: Number(e.target.value),
+                          })
+                        }
+                        className="w-full cursor-pointer"
+                      />
+                    </div>
+
+                    <div
+                      className="p-3 rounded-xl border space-y-1.5"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      <div className="flex justify-between font-medium">
+                        <span>Ondulation &amp; Réfraction</span>
+                        <span className="font-mono">{preferences.waterRefraction ?? 35}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={preferences.waterRefraction ?? 35}
+                        onChange={(e) =>
+                          onUpdatePreferences({
+                            theme: 'aqua',
+                            waterRefraction: Number(e.target.value),
+                          })
+                        }
+                        className="w-full cursor-pointer"
+                      />
+                    </div>
+
+                    <div
+                      className="p-3 rounded-xl border space-y-1.5"
+                      style={{ borderColor: 'var(--border-color)' }}
+                    >
+                      <div className="flex justify-between font-medium">
+                        <span>Teinte de profondeur</span>
+                      </div>
+                      <select
+                        value={preferences.waterTint || 'lagoon'}
+                        onChange={(e) =>
+                          onUpdatePreferences({
+                            theme: 'aqua',
+                            waterTint: e.target.value as WaterTintPreset,
+                          })
+                        }
+                        className="w-full px-2 py-1 rounded border"
+                        style={{
+                          borderColor: 'var(--border-color)',
+                          backgroundColor: 'var(--bg-color)',
+                          color: 'var(--text-color)',
+                        }}
+                      >
+                        <option value="lagoon">Lagune Turquoise (Sombre)</option>
+                        <option value="abyss">Abysse Océanique (Bleu Nuit)</option>
+                        <option value="crystal">Source Cristalline (Clair)</option>
+                        <option value="emerald">Émeraude Cénote (Vert d&apos;Eau)</option>
+                      </select>
                     </div>
                   </div>
                 </div>

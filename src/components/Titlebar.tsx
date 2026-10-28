@@ -22,7 +22,7 @@ interface TitlebarProps {
   preferences: CursivPreferences;
   lastExportConfig: LastExportConfig | null;
   onToggleSidebar: () => void;
-  onNewFile: () => void;
+  onNewFile: (ext?: string) => void;
   onSaveFile: () => void;
   onImportPandocFile: () => void;
   onExportDocument: (format: LastExportConfig['format']) => void;
@@ -158,14 +158,41 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onNewFile();
+                  onNewFile('.md');
                   setOpenMenu(null);
                 }}
                 className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
               >
-                <span>Nouveau document</span>
+                <span>Nouveau document (.md)</span>
                 <span className="opacity-50 font-mono">Ctrl+N</span>
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNewFile('.txt');
+                  setOpenMenu(null);
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex justify-between cursor-pointer"
+              >
+                <span>Nouveau fichier texte (.txt)</span>
+                <span className="opacity-50 font-mono">.txt</span>
+              </button>
+              <div className="px-3 py-1 flex items-center gap-1 flex-wrap">
+                {['.json', '.csv', '.py', '.ts', '.html', '.sql'].map((ext) => (
+                  <button
+                    key={ext}
+                    type="button"
+                    onClick={() => {
+                      onNewFile(ext);
+                      setOpenMenu(null);
+                    }}
+                    className="px-1.5 py-0.5 rounded border text-[10px] font-mono hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                    style={{ borderColor: 'var(--border-color)' }}
+                  >
+                    +{ext}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -647,7 +674,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               </button>
               <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
               <div className="px-3 py-1.5 text-[11px] opacity-75 leading-relaxed">
-                <div className="font-semibold">Cursiv. v1.14.0</div>
+                <div className="font-semibold">Cursiv. v1.17.0</div>
                 <div>Conçu et développé par <span className="font-semibold">Djaël Mola</span></div>
               </div>
             </div>

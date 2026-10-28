@@ -1,5 +1,11 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Bold, Code, Highlighter, Italic, Link2, Strikethrough } from 'lucide-react';
+
+export interface SelectionRangeSpec {
+  start: number;
+  end: number;
+  direction?: 'forward' | 'backward' | 'none';
+}
 
 interface InlinePageInputProps {
   value: string;
@@ -7,13 +13,22 @@ interface InlinePageInputProps {
   multiline?: boolean;
   autoFocus?: boolean;
   initialCaretOffset?: number | null;
+  initialSelection?: SelectionRangeSpec | null;
+  externalCaretVersion?: number;
   motionBlur?: boolean;
   smartTypography?: boolean;
   className?: string;
   style?: React.CSSProperties;
   onChange: (nextValue: string, caretOffset: number) => void;
   onCursorChange?: (caretOffset: number) => void;
-  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKeyDown?: (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    setProgrammaticSelection: (
+      start: number,
+      end: number,
+      direction?: 'forward' | 'backward' | 'none'
+    ) => void
+  ) => void;
 }
 
 interface CaretCoords {
@@ -189,6 +204,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   multiline = true,
   autoFocus = true,
   initialCaretOffset = null,
+  initialSelection = null,
+  externalCaretVersion = 0,
   motionBlur = true,
   smartTypography = true,
   className = '',
@@ -202,12 +219,32 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   const markerRef = useRef<HTMLSpanElement | null>(null);
   const prevValueRef = useRef<string>(value);
   const motionTimerRef = useRef<number | null>(null);
+  const pendingSelectionRef = useRef<SelectionRangeSpec | null>(null);
+  const onCursorChangeRef = useRef(onCursorChange);
+  onCursorChangeRef.current = onCursorChange;
 
-  const [caretOffset, setCaretOffset] = useState<number>(() =>
-    initialCaretOffset !== null ? Math.min(value.length, Math.max(0, initialCaretOffset)) : value.length
-  );
+  const [selRange, setSelRange] = useState<SelectionRangeSpec>(() => {
+    if (initialSelection) {
+      const s = Math.min(value.length, Math.max(0, initialSelection.start));
+      const e = Math.min(value.length, Math.max(0, initialSelection.end));
+      return {
+        start: Math.min(s, e),
+        end: Math.max(s, e),
+        direction: initialSelection.direction || 'forward',
+      };
+    }
+    const pos =
+      initialCaretOffset !== null
+        ? Math.min(value.length, Math.max(0, initialCaretOffset))
+        : value.length;
+    return { start: pos, end: pos, direction: 'none' };
+  });
+
+  const caretOffset =
+    selRange.direction === 'backward' ? selRange.start : selRange.end;
+  const hasSelection = selRange.start !== selRange.end;
+
   const [justTypedIndex, setJustTypedIndex] = useState<number | null>(null);
-  const [hasSelection, setHasSelection] = useState<boolean>(false);
   const [isFocused, setIsFocused] = useState<boolean>(false);
   const [isCaretMoving, setIsCaretMoving] = useState<boolean>(false);
   const [caretCoords, setCaretCoords] = useState<CaretCoords>({
@@ -217,19 +254,49 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     visible: true,
   });
 
-  // Auto-focus when block becomes active and position caret accurately
+  const setProgrammaticSelection = useCallback(
+    (
+      start: number,
+      end: number,
+      direction: 'forward' | 'backward' | 'none' = 'forward'
+    ) => {
+      const s = Math.max(0, Math.min(start, end));
+      const e = Math.max(s, Math.max(start, end));
+      const spec: SelectionRangeSpec = { start: s, end: e, direction };
+      pendingSelectionRef.current = spec;
+      setSelRange(spec);
+      const activePos = direction === 'backward' ? s : e;
+      onCursorChangeRef.current?.(activePos);
+    },
+    []
+  );
+
+  // Mount-only (or explicit externalCaretVersion) focus and selection placement.
+  // Never re-runs on normal cursor movement so mouse & Shift+Arrow selections are never collapsed!
   useEffect(() => {
-    if (autoFocus && textareaRef.current) {
-      const el = textareaRef.current;
-      el.focus({ preventScroll: true });
-      const targetPos =
-        initialCaretOffset !== null
-          ? Math.min(el.value.length, Math.max(0, initialCaretOffset))
-          : el.value.length;
-      el.setSelectionRange(targetPos, targetPos);
-      setCaretOffset(targetPos);
+    const el = textareaRef.current;
+    if (!el || !autoFocus) return;
+    el.focus({ preventScroll: true });
+
+    if (initialSelection) {
+      const s = Math.min(el.value.length, Math.max(0, initialSelection.start));
+      const e = Math.min(el.value.length, Math.max(0, initialSelection.end));
+      const start = Math.min(s, e);
+      const end = Math.max(s, e);
+      const dir = initialSelection.direction || 'forward';
+      el.setSelectionRange(start, end, dir);
+      setSelRange({ start, end, direction: dir });
+      return;
     }
-  }, [autoFocus, initialCaretOffset]);
+
+    const targetPos =
+      initialCaretOffset !== null
+        ? Math.min(el.value.length, Math.max(0, initialCaretOffset))
+        : el.value.length;
+    el.setSelectionRange(targetPos, targetPos);
+    setSelRange({ start: targetPos, end: targetPos, direction: 'none' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocus, externalCaretVersion]);
 
   // Detect newly typed single character for Word-like character materialize animation
   useEffect(() => {
@@ -242,32 +309,79 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     prevValueRef.current = value;
   }, [value, caretOffset]);
 
-  // Auto-resize textarea height to exact content height & clamp caret if prefix was stripped
+  // Auto-resize textarea height ONLY when value changes, and apply any pending programmatic selection
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+
+    if (pendingSelectionRef.current) {
+      const pending = pendingSelectionRef.current;
+      pendingSelectionRef.current = null;
+      const clampedStart = Math.min(value.length, Math.max(0, pending.start));
+      const clampedEnd = Math.min(value.length, Math.max(clampedStart, pending.end));
+      el.setSelectionRange(clampedStart, clampedEnd, pending.direction || 'forward');
+    }
+
     el.style.height = '0px';
     el.style.height = `${Math.max(el.scrollHeight, 26)}px`;
-    if (caretOffset > value.length) {
-      setCaretOffset(value.length);
-      el.setSelectionRange(value.length, value.length);
-    }
-  }, [value, caretOffset]);
+  }, [value]);
 
-  // Measure exact sub-pixel (x, y, height) of caret in mirror layer for Word smooth gliding cursor
-  const updateCaretPosition = () => {
+  // Measure exact sub-pixel (x, y, height) of caret in mirror layer without mutating selection state
+  const measureCaretDomCoords = useCallback(() => {
     const el = textareaRef.current;
     const mirror = mirrorRef.current;
     const marker = markerRef.current;
     if (!el || !mirror || !marker) return;
 
+    const mirrorRect = mirror.getBoundingClientRect();
+    const markerRect = marker.getBoundingClientRect();
+    const computedLineHeight = parseFloat(window.getComputedStyle(el).lineHeight) || 24;
+    const caretH = Math.max(18, Math.min(42, computedLineHeight * 0.82));
+    const yOffset = Math.max(0, (computedLineHeight - caretH) / 2);
+
+    const nextX = Math.max(0, markerRect.left - mirrorRect.left);
+    const nextY = Math.max(0, markerRect.top - mirrorRect.top + yOffset);
+
+    setCaretCoords((prev) => {
+      if (
+        Math.abs(prev.x - nextX) < 0.25 &&
+        Math.abs(prev.y - nextY) < 0.25 &&
+        Math.abs(prev.height - caretH) < 0.25 &&
+        prev.visible
+      ) {
+        return prev;
+      }
+      return {
+        x: nextX,
+        y: nextY,
+        height: caretH,
+        visible: true,
+      };
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    measureCaretDomCoords();
+  }, [value, caretOffset, measureCaretDomCoords]);
+
+  // Sync selection state from user interaction on the native <textarea>
+  const syncSelectionFromDom = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el || pendingSelectionRef.current) return;
+
     const selStart = el.selectionStart ?? 0;
     const selEnd = el.selectionEnd ?? 0;
-    const isBackward = el.selectionDirection === 'backward';
-    const activeCaret = isBackward ? selStart : selEnd;
-    setCaretOffset(activeCaret);
-    setHasSelection(selStart !== selEnd);
-    onCursorChange?.(activeCaret);
+    const dir = (el.selectionDirection || 'none') as 'forward' | 'backward' | 'none';
+    const activeCaret = dir === 'backward' ? selStart : selEnd;
+
+    setSelRange((prev) => {
+      if (prev.start === selStart && prev.end === selEnd && prev.direction === dir) {
+        return prev;
+      }
+      return { start: selStart, end: selEnd, direction: dir };
+    });
+
+    onCursorChangeRef.current?.(activeCaret);
 
     if (motionBlur) {
       setIsCaretMoving(true);
@@ -275,27 +389,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       motionTimerRef.current = window.setTimeout(() => setIsCaretMoving(false), 90);
     }
 
-    requestAnimationFrame(() => {
-      if (!mirrorRef.current || !markerRef.current) return;
-      const mirrorRect = mirrorRef.current.getBoundingClientRect();
-      const markerRect = markerRef.current.getBoundingClientRect();
-      const computedLineHeight = parseFloat(window.getComputedStyle(el).lineHeight) || 24;
-      const caretH = Math.max(18, Math.min(42, computedLineHeight * 0.82));
-      const yOffset = Math.max(0, (computedLineHeight - caretH) / 2);
-
-      setCaretCoords({
-        x: Math.max(0, markerRect.left - mirrorRect.left),
-        y: Math.max(0, markerRect.top - mirrorRect.top + yOffset),
-        height: caretH,
-        visible: true,
-      });
-    });
-  };
-
-  useLayoutEffect(() => {
-    updateCaretPosition();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, caretOffset]);
+    requestAnimationFrame(measureCaretDomCoords);
+  }, [motionBlur, measureCaretDomCoords]);
 
   const wrapSelectionWith = (prefix: string, suffix = prefix) => {
     const el = textareaRef.current;
@@ -306,12 +401,12 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     const selected = value.slice(start, end);
     const wrapped = `${prefix}${selected}${suffix}`;
     const nextVal = value.slice(0, start) + wrapped + value.slice(end);
-    const nextEnd = start + wrapped.length;
+    const nextStart = start + prefix.length;
+    const nextEnd = end + prefix.length;
+    setProgrammaticSelection(nextStart, nextEnd, 'forward');
     onChange(nextVal, nextEnd);
     requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(start + prefix.length, end + prefix.length);
-      updateCaretPosition();
+      el.focus({ preventScroll: true });
     });
   };
 
@@ -394,6 +489,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
           fontWeight: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
+          tabSize: 4,
         }}
       >
         <span>{beforeCaretText}</span>
@@ -403,45 +499,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         <span>{afterCaretText || ' '}</span>
       </div>
 
-      {/* 2. Visible Direct-on-Page Formatted Layer (Zero Box, Zero Duplicate) */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none relative z-10 whitespace-pre-wrap break-words min-h-[1.6em]"
-        style={{
-          fontFamily: 'inherit',
-          fontSize: 'inherit',
-          fontWeight: 'inherit',
-          lineHeight: 'inherit',
-          letterSpacing: 'inherit',
-        }}
-      >
-        {value ? (
-          renderMetricLockedMarkdown(value, caretOffset, justTypedIndex)
-        ) : (
-          <span
-            className="opacity-30 select-none font-normal"
-            style={{ color: 'var(--meta-content-color)' }}
-          >
-            {placeholder || ''}
-          </span>
-        )}
-      </div>
-
-      {/* 3. Microsoft Word Smooth-Gliding Caret (with optional Kinetic Motion Blur) */}
-      {isFocused && !hasSelection && (
-        <div
-          aria-hidden="true"
-          className={`cursiv-word-caret ${
-            motionBlur && isCaretMoving ? 'cursiv-word-caret-motion-blur' : ''
-          } pointer-events-none absolute left-0 top-0 z-20`}
-          style={{
-            height: `${caretCoords.height}px`,
-            transform: `translate3d(${caretCoords.x}px, ${caretCoords.y}px, 0)`,
-          }}
-        />
-      )}
-
-      {/* 4. Transparent Native Input Overlay (Handles Typing, IME, Smart Paste & Mouse Selection) */}
+      {/* 2. Transparent Native Input Layer (z-10: receives all mouse/keyboard events and paints ::selection underneath z-20 text) */}
       <textarea
         ref={textareaRef}
         value={value}
@@ -451,7 +509,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         autoCapitalize="off"
         onFocus={() => {
           setIsFocused(true);
-          updateCaretPosition();
+          syncSelectionFromDom();
         }}
         onBlur={() => setIsFocused(false)}
         onPaste={(e) => {
@@ -467,12 +525,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
               const linked = `[${selected}](${pasted})`;
               const nextVal = value.slice(0, start) + linked + value.slice(end);
               const nextPos = start + linked.length;
-              setCaretOffset(nextPos);
+              setProgrammaticSelection(nextPos, nextPos, 'forward');
               onChange(nextVal, nextPos);
-              requestAnimationFrame(() => {
-                el.setSelectionRange(nextPos, nextPos);
-                updateCaretPosition();
-              });
             }
           }
         }}
@@ -484,32 +538,79 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
           let nextPos = e.target.selectionStart ?? nextVal.length;
           if (smartTypography && nextVal.length >= value.length) {
             const transformed = applySmartTypographyTransforms(nextVal, nextPos);
-            nextVal = transformed.text;
-            nextPos = transformed.caret;
+            if (transformed.text !== nextVal) {
+              nextVal = transformed.text;
+              nextPos = transformed.caret;
+              setProgrammaticSelection(nextPos, nextPos, 'none');
+            }
           }
-          setCaretOffset(nextPos);
+          if (!pendingSelectionRef.current) {
+            setSelRange({ start: nextPos, end: nextPos, direction: 'none' });
+          }
           onChange(nextVal, nextPos);
         }}
-        onSelect={updateCaretPosition}
-        onKeyUp={updateCaretPosition}
-        onMouseUp={updateCaretPosition}
+        onSelect={syncSelectionFromDom}
+        onKeyUp={syncSelectionFromDom}
+        onMouseUp={syncSelectionFromDom}
         onMouseMove={(e) => {
-          if (e.buttons === 1) updateCaretPosition();
+          if (e.buttons === 1) syncSelectionFromDom();
         }}
-        onClick={updateCaretPosition}
+        onClick={syncSelectionFromDom}
         onKeyDown={(e) => {
-          onKeyDown?.(e);
-          requestAnimationFrame(updateCaretPosition);
+          onKeyDown?.(e, setProgrammaticSelection);
+          if (!e.defaultPrevented) {
+            requestAnimationFrame(syncSelectionFromDom);
+          }
         }}
-        className="no-export cursiv-transparent-textarea absolute inset-0 z-30 w-full h-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
+        className="no-export cursiv-transparent-textarea absolute inset-0 z-10 w-full h-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
         style={{
           fontFamily: 'inherit',
           fontSize: 'inherit',
           fontWeight: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
+          tabSize: 4,
         }}
       />
+
+      {/* 3. Visible Direct-on-Page Formatted Layer (z-20 with pointer-events-none so text sits cleanly above ::selection) */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none relative z-20 whitespace-pre-wrap break-words min-h-[1.6em]"
+        style={{
+          fontFamily: 'inherit',
+          fontSize: 'inherit',
+          fontWeight: 'inherit',
+          lineHeight: 'inherit',
+          letterSpacing: 'inherit',
+          tabSize: 4,
+        }}
+      >
+        {value ? (
+          renderMetricLockedMarkdown(value, caretOffset, justTypedIndex)
+        ) : (
+          <span
+            className="opacity-30 select-none font-normal"
+            style={{ color: 'var(--meta-content-color)' }}
+          >
+            {placeholder || ''}
+          </span>
+        )}
+      </div>
+
+      {/* 4. Microsoft Word Smooth-Gliding Caret (with optional Kinetic Motion Blur) */}
+      {isFocused && !hasSelection && (
+        <div
+          aria-hidden="true"
+          className={`cursiv-word-caret ${
+            motionBlur && isCaretMoving ? 'cursiv-word-caret-motion-blur' : ''
+          } pointer-events-none absolute left-0 top-0 z-30`}
+          style={{
+            height: `${caretCoords.height}px`,
+            transform: `translate3d(${caretCoords.x}px, ${caretCoords.y}px, 0)`,
+          }}
+        />
+      )}
     </div>
   );
 };

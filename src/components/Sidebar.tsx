@@ -4,10 +4,13 @@ import {
   ChevronRight,
   Copy,
   Edit3,
+  FileCode,
   FilePlus,
+  FileSpreadsheet,
   FileText,
   Folder,
   FolderOpen,
+  Image as ImageIcon,
   ListTree,
   Newspaper,
   Search,
@@ -15,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { FileEntryNode, OutlineHeading } from '../types/editor';
+import { describeFilePath, NEW_FILE_PRESETS } from '../utils/fileTypes';
 
 export type SidebarTab = 'files' | 'articles' | 'outline';
 
@@ -32,7 +36,7 @@ interface SidebarProps {
   onCustomWidthChange?: (width: number) => void;
   onTabChange: (tab: SidebarTab) => void;
   onSelectFile: (path: string) => void;
-  onCreateFile: () => void;
+  onCreateFile: (ext?: string) => void;
   onRenameFile: (oldPath: string, newName: string) => void;
   onClearAutoRename: () => void;
   onDuplicateFile: (path: string) => void;
@@ -74,6 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
+  const [newFileMenuOpen, setNewFileMenuOpen] = useState(false);
   const [autoWidthPx, setAutoWidthPx] = useState<number>(() =>
     Math.round(Math.min(340, Math.max(276, window.innerWidth * 0.21)))
   );
@@ -85,6 +90,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
     targetName: string | null;
   } | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const newFileMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const focusAndSelectFileStem = () => {
+    requestAnimationFrame(() => {
+      const el = renameInputRef.current;
+      if (!el) return;
+      el.focus();
+      const val = el.value;
+      const lastDot = val.lastIndexOf('.');
+      if (lastDot > 0) {
+        el.setSelectionRange(0, lastDot);
+      } else {
+        el.select();
+      }
+    });
+  };
 
   // Automatically resize sidebar proportionally to screen width when window resizes
   useEffect(() => {
@@ -105,18 +126,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return () => window.removeEventListener('mousedown', close);
   }, [sidebarContextMenu]);
 
+  useEffect(() => {
+    if (!newFileMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (newFileMenuRef.current && !newFileMenuRef.current.contains(e.target as Node)) {
+        setNewFileMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [newFileMenuOpen]);
+
   // Automatically enter rename mode when a new document is created (double-click or Ctrl+N)
   useEffect(() => {
     if (autoRenameFilePath) {
-      const baseName =
-        autoRenameFilePath.split('/').pop()?.replace(/\.md$/i, '') || 'Nouveau document';
+      const fullName = autoRenameFilePath.split('/').pop() || 'Nouveau document.md';
       setRenamingPath(autoRenameFilePath);
-      setRenameInput(baseName);
+      setRenameInput(fullName);
       onClearAutoRename();
-      requestAnimationFrame(() => {
-        renameInputRef.current?.focus();
-        renameInputRef.current?.select();
-      });
+      focusAndSelectFileStem();
     }
   }, [autoRenameFilePath, onClearAutoRename]);
 
@@ -171,14 +199,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (prev) onSelectFile(prev.path);
     } else if (e.key === 'F2' && currentFilePath) {
       e.preventDefault();
-      const currentName =
-        currentFilePath.split('/').pop()?.replace(/\.md$/i, '') || 'Document';
+      const currentName = currentFilePath.split('/').pop() || 'Document.md';
       setRenamingPath(currentFilePath);
       setRenameInput(currentName);
-      requestAnimationFrame(() => {
-        renameInputRef.current?.focus();
-        renameInputRef.current?.select();
-      });
+      focusAndSelectFileStem();
     } else if (e.key === 'Delete' && currentFilePath && flatFiles.length > 1) {
       e.preventDefault();
       onDeleteFile(currentFilePath);
@@ -208,6 +232,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+  };
+
+  const renderFileIcon = (filePath: string) => {
+    const desc = describeFilePath(filePath);
+    if (desc.category === 'image' || desc.category === 'svg') {
+      return <ImageIcon className="w-3.5 h-3.5 shrink-0 opacity-75" />;
+    }
+    if (desc.category === 'csv') {
+      return <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 opacity-75" />;
+    }
+    if (desc.category === 'code' || desc.category === 'json' || desc.category === 'html') {
+      return <FileCode className="w-3.5 h-3.5 shrink-0 opacity-75" />;
+    }
+    return <FileText className="w-3.5 h-3.5 shrink-0 opacity-75" />;
   };
 
   const renderTreeNode = (node: FileEntryNode, depth = 0): React.ReactNode => {
@@ -244,6 +282,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     const isSelected = node.path === currentFilePath;
     const isRenaming = renamingPath === node.path;
+    const fileDesc = describeFilePath(node.path);
 
     return (
       <div
@@ -272,15 +311,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         onDoubleClick={(e) => {
           e.stopPropagation();
           setRenamingPath(node.path);
-          setRenameInput(node.name.replace(/\.md$/i, ''));
-          requestAnimationFrame(() => {
-            renameInputRef.current?.focus();
-            renameInputRef.current?.select();
-          });
+          setRenameInput(node.name);
+          focusAndSelectFileStem();
         }}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <FileText className="w-3.5 h-3.5 shrink-0 opacity-75" />
+          {renderFileIcon(node.path)}
           {isRenaming ? (
             <input
               ref={renameInputRef}
@@ -301,7 +337,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setRenamingPath(null);
                 }
               }}
-              aria-label="Renommer le fichier"
+              aria-label="Renommer le fichier (avec extension)"
               className="w-full px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 border outline-none text-xs font-medium"
               style={{
                 borderColor: 'var(--primary-color)',
@@ -309,49 +345,60 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
             />
           ) : (
-            <span className="truncate font-medium" title="Double-cliquez pour renommer (F2)">
+            <span
+              className="truncate font-medium"
+              title={`${node.name} (${fileDesc.label}) — Double-cliquez pour renommer ou changer l'extension (F2)`}
+            >
               {node.name}
             </span>
           )}
         </div>
 
-        {/* File CRUD Quick Actions */}
         {!isRenaming && (
-          <div
-            className="hidden group-hover:flex items-center gap-1 ml-1 shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              onClick={() => {
-                setRenamingPath(node.path);
-                setRenameInput(node.name.replace(/\.md$/i, ''));
-                requestAnimationFrame(() => {
-                  renameInputRef.current?.focus();
-                  renameInputRef.current?.select();
-                });
+          <div className="flex items-center gap-1 ml-1 shrink-0">
+            <span
+              className="group-hover:hidden px-1 py-0.2 rounded text-[9px] font-mono uppercase opacity-55"
+              style={{
+                backgroundColor: 'color-mix(in srgb, var(--border-color) 40%, transparent)',
               }}
-              className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
-              title="Renommer (F2)"
             >
-              <Edit3 className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => onDuplicateFile(node.path)}
-              className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
-              title="Dupliquer (Ctrl+D)"
+              {fileDesc.badge}
+            </span>
+
+            {/* File CRUD Quick Actions */}
+            <div
+              className="hidden group-hover:flex items-center gap-1"
+              onClick={(e) => e.stopPropagation()}
             >
-              <Copy className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => onDeleteFile(node.path)}
-              className="p-0.5 rounded text-red-500 hover:bg-red-500/10 cursor-pointer"
-              title="Supprimer (Suppr)"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRenamingPath(node.path);
+                  setRenameInput(node.name);
+                  focusAndSelectFileStem();
+                }}
+                className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
+                title="Renommer / Changer l'extension (F2)"
+              >
+                <Edit3 className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onDuplicateFile(node.path)}
+                className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
+                title="Dupliquer (Ctrl+D)"
+              >
+                <Copy className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onDeleteFile(node.path)}
+                className="p-0.5 rounded text-red-500 hover:bg-red-500/10 cursor-pointer"
+                title="Supprimer (Suppr)"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -385,9 +432,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         tabIndex={0}
       >
         <div className="w-full min-w-[268px] h-full flex flex-col">
-          {/* Top Tab Switcher: File Tree | Articles | Outline + Action Icons (Never Clipped) */}
+          {/* Top Tab Switcher: File Tree | Articles | Outline + Action Icons */}
           <div
-            className="flex items-center justify-between gap-1 px-2.5 py-2 border-b text-xs shrink-0"
+            className="flex items-center justify-between gap-1 px-2.5 py-2 border-b text-xs shrink-0 relative"
             style={{ borderColor: 'var(--border-color)' }}
           >
             <div className="flex items-center gap-0.5 min-w-0 flex-1">
@@ -419,7 +466,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 style={{
                   color: activeTab === 'articles' ? 'var(--primary-color)' : 'inherit',
                 }}
-                title="Liste des notes"
+                title="Liste des fichiers"
               >
                 <Newspaper className="w-3.5 h-3.5 shrink-0" />
                 <span>Articles</span>
@@ -443,15 +490,64 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             </div>
 
-            <div className="flex items-center gap-0.5 shrink-0">
-              <button
-                type="button"
-                onClick={onCreateFile}
-                className="p-1.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
-                title="Nouveau document Markdown (Ctrl+N ou double-clic)"
-              >
-                <FilePlus className="w-3.5 h-3.5" />
-              </button>
+            <div ref={newFileMenuRef} className="flex items-center gap-0.5 shrink-0 relative">
+              <div className="flex items-center rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
+                <button
+                  type="button"
+                  onClick={() => onCreateFile('.md')}
+                  className="p-1.5 cursor-pointer"
+                  title="Nouveau fichier Markdown (Ctrl+N ou double-clic)"
+                >
+                  <FilePlus className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewFileMenuOpen((v) => !v)}
+                  className="pr-1 py-1.5 opacity-70 hover:opacity-100 cursor-pointer"
+                  title="Choisir le type de fichier à créer (.md, .txt, .json, .csv, .py, .ts...)"
+                >
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </div>
+
+              {newFileMenuOpen && (
+                <div
+                  className="cursiv-popup-anim absolute right-0 top-full mt-1 w-56 rounded-xl border shadow-2xl py-1.5 z-[110] max-h-80 overflow-y-auto"
+                  style={{
+                    backgroundColor: 'var(--bg-color)',
+                    borderColor: 'var(--border-color)',
+                    color: 'var(--text-color)',
+                  }}
+                >
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider opacity-55">
+                    Créer un nouveau fichier
+                  </div>
+                  {NEW_FILE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.ext}
+                      type="button"
+                      onClick={() => {
+                        setNewFileMenuOpen(false);
+                        onCreateFile(preset.ext);
+                      }}
+                      className="w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-between text-xs cursor-pointer"
+                    >
+                      <span>{preset.label}</span>
+                      <span
+                        className="px-1.5 py-0.5 rounded font-mono text-[10px] opacity-70"
+                        style={{
+                          backgroundColor:
+                            'color-mix(in srgb, var(--primary-color) 12%, transparent)',
+                          color: 'var(--primary-color)',
+                        }}
+                      >
+                        {preset.ext}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={onOpenFolderDialog}
@@ -498,7 +594,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
-          {/* Panel Body — Double-click or Right-click empty area to create/manage documents */}
+          {/* Panel Body */}
           <div
             className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 flex flex-col"
             onContextMenu={(e) => {
@@ -520,7 +616,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 !target.closest('label')
               ) {
                 e.preventDefault();
-                onCreateFile();
+                onCreateFile('.md');
               }
             }}
           >
@@ -535,7 +631,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className="flex-1 min-h-[120px]"
                   onDoubleClick={(e) => {
                     e.stopPropagation();
-                    onCreateFile();
+                    onCreateFile('.md');
                   }}
                 />
               </>
@@ -544,7 +640,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {activeTab === 'articles' && (
               <div className="flex-1 flex flex-col">
                 <div className="flex items-center justify-between px-2 pb-2 text-[11px] opacity-70">
-                  <span>{sortedArticles.length} notes</span>
+                  <span>{sortedArticles.length} fichiers</span>
                   <button
                     type="button"
                     onClick={() =>
@@ -558,6 +654,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="space-y-1.5">
                   {sortedArticles.map((art) => {
                     const isSelected = art.path === currentFilePath;
+                    const fileDesc = describeFilePath(art.path);
                     const dateStr = new Date(art.modified_ms).toLocaleDateString('fr-FR', {
                       day: '2-digit',
                       month: 'short',
@@ -582,20 +679,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       >
                         <div className="flex items-center justify-between gap-2 mb-1">
                           <span className="font-semibold text-xs truncate">
-                            {art.name.replace(/\.md$/i, '')}
+                            {art.name}
                           </span>
-                          <span
-                            className="text-[10px] shrink-0"
-                            style={{ color: 'var(--meta-content-color)' }}
-                          >
-                            {dateStr}
-                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span
+                              className="px-1 py-0.2 rounded text-[9px] font-mono uppercase opacity-70"
+                              style={{
+                                backgroundColor:
+                                  'color-mix(in srgb, var(--border-color) 40%, transparent)',
+                              }}
+                            >
+                              {fileDesc.badge}
+                            </span>
+                            <span
+                              className="text-[10px]"
+                              style={{ color: 'var(--meta-content-color)' }}
+                            >
+                              {dateStr}
+                            </span>
+                          </div>
                         </div>
                         <p
                           className="text-[11px] line-clamp-2 m-0 leading-snug"
                           style={{ color: 'var(--meta-content-color)' }}
                         >
-                          {art.excerpt || 'Aucun extrait'}
+                          {art.excerpt || fileDesc.label}
                         </p>
                       </div>
                     );
@@ -658,7 +766,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   checked={showNonMarkdownFiles}
                   onChange={onToggleNonMarkdownFiles}
                 />
-                <span className="truncate">Afficher les fichiers non-Markdown</span>
+                <span className="truncate">Afficher tous les types de fichiers</span>
               </label>
             </div>
           )}
@@ -676,13 +784,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {sidebarContextMenu && (
           <div
             style={{
-              left: `${Math.min(sidebarContextMenu.x, window.innerWidth - 220)}px`,
-              top: `${Math.min(sidebarContextMenu.y, window.innerHeight - 230)}px`,
+              left: `${Math.min(sidebarContextMenu.x, window.innerWidth - 235)}px`,
+              top: `${Math.min(sidebarContextMenu.y, window.innerHeight - 290)}px`,
               backgroundColor: 'color-mix(in srgb, var(--bg-color) 96%, transparent)',
               borderColor: 'var(--border-color)',
               color: 'var(--text-color)',
             }}
-            className="no-print no-export cursiv-popup-anim fixed z-[100] w-52 rounded-xl border shadow-2xl backdrop-blur-md py-1.5 text-xs select-none"
+            className="no-print no-export cursiv-popup-anim fixed z-[100] w-56 rounded-xl border shadow-2xl backdrop-blur-md py-1.5 text-xs select-none"
             onMouseDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
           >
@@ -690,16 +798,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
               type="button"
               onClick={() => {
                 setSidebarContextMenu(null);
-                onCreateFile();
+                onCreateFile('.md');
               }}
               className="w-full px-3 py-1.5 text-left hover:bg-black/6 dark:hover:bg-white/8 flex items-center justify-between cursor-pointer"
             >
               <span className="flex items-center gap-2">
                 <FilePlus className="w-3.5 h-3.5 opacity-70" />
-                <span>Nouveau document</span>
+                <span>Nouveau document (.md)</span>
               </span>
               <span className="opacity-45 font-mono text-[10px]">Ctrl+N</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSidebarContextMenu(null);
+                onCreateFile('.txt');
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-black/6 dark:hover:bg-white/8 flex items-center justify-between cursor-pointer"
+            >
+              <span className="flex items-center gap-2">
+                <FileText className="w-3.5 h-3.5 opacity-70" />
+                <span>Nouveau fichier texte (.txt)</span>
+              </span>
+              <span className="opacity-45 font-mono text-[10px]">.txt</span>
+            </button>
+
+            <div className="px-3 py-1 flex items-center gap-1 flex-wrap">
+              {['.json', '.csv', '.py', '.ts', '.html', '.sql'].map((ext) => (
+                <button
+                  key={ext}
+                  type="button"
+                  onClick={() => {
+                    setSidebarContextMenu(null);
+                    onCreateFile(ext);
+                  }}
+                  className="px-1.5 py-0.5 rounded border text-[10px] font-mono hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                  style={{ borderColor: 'var(--border-color)' }}
+                >
+                  +{ext}
+                </button>
+              ))}
+            </div>
 
             <button
               type="button"
@@ -726,17 +866,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     const n = sidebarContextMenu.targetName || '';
                     setSidebarContextMenu(null);
                     setRenamingPath(p);
-                    setRenameInput(n.replace(/\.md$/i, ''));
-                    requestAnimationFrame(() => {
-                      renameInputRef.current?.focus();
-                      renameInputRef.current?.select();
-                    });
+                    setRenameInput(n);
+                    focusAndSelectFileStem();
                   }}
                   className="w-full px-3 py-1.5 text-left hover:bg-black/6 dark:hover:bg-white/8 flex items-center justify-between cursor-pointer"
                 >
                   <span className="flex items-center gap-2">
                     <Edit3 className="w-3.5 h-3.5 opacity-70" />
-                    <span>Renommer</span>
+                    <span>Renommer / Extension</span>
                   </span>
                   <span className="opacity-45 font-mono text-[10px]">F2</span>
                 </button>
@@ -793,7 +930,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
               className="w-full px-3 py-1 text-left hover:bg-black/6 dark:hover:bg-white/8 flex items-center justify-between cursor-pointer text-[11px] opacity-80"
             >
-              <span>Fichiers non-Markdown</span>
+              <span>Tous les types de fichiers</span>
               <span>{showNonMarkdownFiles ? '✓' : ''}</span>
             </button>
           </div>
