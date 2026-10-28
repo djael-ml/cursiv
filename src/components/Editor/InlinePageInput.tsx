@@ -28,6 +28,7 @@ interface InlinePageInputProps {
   smartTypography?: boolean;
   className?: string;
   style?: React.CSSProperties;
+  onCrossBlockDrag?: (startClientX: number, startClientY: number, currentClientX: number, currentClientY: number) => boolean;
   onChange: (nextValue: string, caretOffset: number) => void;
   onCursorChange?: (caretOffset: number) => void;
   onKeyDown?: (
@@ -301,6 +302,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   smartTypography = true,
   className = '',
   style,
+  onCrossBlockDrag,
   onChange,
   onCursorChange,
   onKeyDown,
@@ -313,6 +315,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   const activeDragCleanupRef = useRef<(() => void) | null>(null);
   const onCursorChangeRef = useRef(onCursorChange);
   onCursorChangeRef.current = onCursorChange;
+  const onCrossBlockDragRef = useRef(onCrossBlockDrag);
+  onCrossBlockDragRef.current = onCrossBlockDrag;
 
   const [selRange, setSelRange] = useState<SelectionRangeSpec>(() => {
     if (initialSelection) {
@@ -555,17 +559,35 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         measureSelectionToolbarCoords(initStart, initEnd);
       }
 
-      const onWindowMouseMove = (moveEvent: MouseEvent) => {
+      const scrollParent = el.closest('.overflow-y-auto') as HTMLElement | null;
+      let lastPointerX = clientX;
+      let lastPointerY = clientY;
+      let pointerMoved = false;
+      let autoScrollRaf: number | null = null;
+
+      const updateSelectionAtPoint = (ptX: number, ptY: number) => {
         const curEl = textareaRef.current;
         const curHitTest = hitTestRef.current;
         if (!curEl || !curHitTest) return;
+
+        // If user dragged vertically out of this block into adjacent blocks, hand off to the sliding multi-block selection rectangle!
+        if (onCrossBlockDragRef.current) {
+          const boxRect = curHitTest.getBoundingClientRect();
+          if (ptY > boxRect.bottom + 22 || ptY < boxRect.top - 22) {
+            const handedOff = onCrossBlockDragRef.current(clientX, clientY, ptX, ptY);
+            if (handedOff) {
+              activeDragCleanupRef.current?.();
+              return;
+            }
+          }
+        }
 
         const focusOffset = getCharOffsetFromPoint(
           curHitTest,
           curEl,
           curEl.value,
-          moveEvent.clientX,
-          moveEvent.clientY
+          ptX,
+          ptY
         );
         const start = Math.min(anchorOffset, focusOffset);
         const end = Math.max(anchorOffset, focusOffset);
@@ -588,10 +610,58 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         }
       };
 
-      const onWindowMouseUp = () => {
+      const EDGE_ZONE = 90;
+      const MAX_SPEED = 22;
+      const tickAutoScroll = () => {
+        if (pointerMoved && scrollParent) {
+          const rect = scrollParent.getBoundingClientRect();
+          let dy = 0;
+          if (lastPointerY > rect.bottom - EDGE_ZONE) {
+            const ratio = Math.min(
+              1,
+              Math.max(0, (lastPointerY - (rect.bottom - EDGE_ZONE)) / EDGE_ZONE)
+            );
+            dy = Math.ceil(2 + ratio * ratio * MAX_SPEED);
+          } else if (lastPointerY < rect.top + EDGE_ZONE) {
+            const ratio = Math.min(
+              1,
+              Math.max(0, (rect.top + EDGE_ZONE - lastPointerY) / EDGE_ZONE)
+            );
+            dy = -Math.ceil(2 + ratio * ratio * MAX_SPEED);
+          }
+          if (dy !== 0) {
+            const prev = scrollParent.scrollTop;
+            scrollParent.scrollTop += dy;
+            if (scrollParent.scrollTop !== prev) {
+              updateSelectionAtPoint(lastPointerX, lastPointerY);
+            }
+          }
+        }
+        autoScrollRaf = window.requestAnimationFrame(tickAutoScroll);
+      };
+      autoScrollRaf = window.requestAnimationFrame(tickAutoScroll);
+
+      const onWindowMouseMove = (moveEvent: MouseEvent) => {
+        lastPointerX = moveEvent.clientX;
+        lastPointerY = moveEvent.clientY;
+        if (Math.hypot(lastPointerX - clientX, lastPointerY - clientY) > 3) {
+          pointerMoved = true;
+        }
+        updateSelectionAtPoint(lastPointerX, lastPointerY);
+      };
+
+      const cleanupDrag = () => {
+        if (autoScrollRaf !== null) {
+          window.cancelAnimationFrame(autoScrollRaf);
+          autoScrollRaf = null;
+        }
         window.removeEventListener('mousemove', onWindowMouseMove);
         window.removeEventListener('mouseup', onWindowMouseUp);
         activeDragCleanupRef.current = null;
+      };
+
+      const onWindowMouseUp = () => {
+        cleanupDrag();
         const curEl = textareaRef.current;
         if (curEl) {
           const s = curEl.selectionStart ?? 0;
@@ -604,10 +674,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
 
       window.addEventListener('mousemove', onWindowMouseMove);
       window.addEventListener('mouseup', onWindowMouseUp);
-      activeDragCleanupRef.current = () => {
-        window.removeEventListener('mousemove', onWindowMouseMove);
-        window.removeEventListener('mouseup', onWindowMouseUp);
-      };
+      activeDragCleanupRef.current = cleanupDrag;
     },
     [
       selRange.direction,

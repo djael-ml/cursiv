@@ -149,7 +149,9 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   } | null>(null);
   const mouseDownInsideBlockRef = useRef<boolean>(false);
   const mouseDownCoordsRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mouseDownScrollRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const justFinishedLassoRef = useRef<boolean>(false);
+  const activeLassoCleanupRef = useRef<(() => void) | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [activeListItemId, setActiveListItemId] = useState<string | null>(null);
   const [activeCalloutField, setActiveCalloutField] = useState<'title' | 'content'>('content');
@@ -211,6 +213,10 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     e.preventDefault();
     mouseDownInsideBlockRef.current = true;
     mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+    mouseDownScrollRef.current = {
+      left: scrollContainerRef.current?.scrollLeft ?? 0,
+      top: scrollContainerRef.current?.scrollTop ?? 0,
+    };
     setSelectedBlockIds([]);
     setInitialBlockSelection(null);
     setPendingMousePoint({
@@ -266,12 +272,73 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     onChangeBlocks(copy);
   };
 
-  // Global Alt+ArrowUp / Alt+ArrowDown (move block) and Ctrl+D (duplicate block) shortcuts
+  // Global Ctrl+A (Select All Document), Alt+ArrowUp / Alt+ArrowDown (move block), and Ctrl+D (duplicate block)
   useEffect(() => {
     const onGlobalKeyDown = (e: KeyboardEvent) => {
+      // Fast, effective Ctrl+A across the whole document
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
+        const activeEl = document.activeElement as HTMLElement | null;
+        // Let inputs outside the editor sheet (e.g. sidebar search, modals) or CodeMirror blocks handle their own Ctrl+A first
+        if (
+          activeEl &&
+          (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') &&
+          !activeEl.closest('.cursiv-editor-sheet')
+        ) {
+          return;
+        }
+        if (activeEl && activeEl.closest('.cm-editor')) {
+          return;
+        }
+
+        const currentBlocks = blocksRef.current;
+        if (currentBlocks.length === 0) return;
+
+        // If the document has only 1 editable text block, select 100% of its text inside InlinePageInput
+        if (
+          currentBlocks.length === 1 &&
+          (currentBlocks[0].type === 'paragraph' ||
+            currentBlocks[0].type === 'heading' ||
+            currentBlocks[0].type === 'blockquote')
+        ) {
+          const single = currentBlocks[0];
+          if (activeEl && activeEl.tagName === 'TEXTAREA' && activeEl.closest('.cursiv-editor-sheet')) {
+            const ta = activeEl as HTMLTextAreaElement;
+            if ((ta.selectionStart ?? 0) === 0 && (ta.selectionEnd ?? 0) === ta.value.length && ta.value.length > 0) {
+              // Second Ctrl+A selects the block card itself
+              e.preventDefault();
+              ta.blur();
+              onSelectBlockRef.current(null);
+              setSelectedBlockIds([single.id]);
+              return;
+            }
+            // Let native textarea select 0..length and sync
+            return;
+          }
+          e.preventDefault();
+          setSelectedBlockIds([]);
+          setInitialBlockSelection({
+            blockId: single.id,
+            spec: { start: 0, end: single.text.length, direction: 'forward' },
+          });
+          setCaretVersion((v) => v + 1);
+          onSelectBlockRef.current(single.id, single.text.length);
+          return;
+        }
+
+        // Multi-block document:
+        // Pressing Ctrl+A immediately selects ALL blocks in the document!
+        e.preventDefault();
+        e.stopPropagation();
+        if (activeEl instanceof HTMLElement) {
+          activeEl.blur();
+        }
+        onSelectBlockRef.current(null);
+        setSelectedBlockIds(currentBlocks.map((b) => b.id));
+        return;
+      }
+
       if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         const activeBlock = blocksRef.current.find((b) => b.id === activeBlockId);
-        // Lists and Tables handle Alt+ArrowUp/Down internally to reorder items/rows
         if (activeBlock && (activeBlock.type === 'list' || activeBlock.type === 'table')) {
           return;
         }
@@ -298,54 +365,105 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         }
       }
     };
-    window.addEventListener('keydown', onGlobalKeyDown);
-    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+    window.addEventListener('keydown', onGlobalKeyDown, true);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBlockId, selectedBlockIds, blocks]);
 
-  // Notion-style Multi-Block Lasso Selection Keyboard Actions (Delete, Copy, Cut, Escape)
+  // Multi-Block Selection Keyboard Actions (Delete, Backspace, Copy, Cut, Paste, Type-to-replace, Escape)
   useEffect(() => {
     if (selectedBlockIds.length === 0) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      const activeTag = document.activeElement?.tagName.toLowerCase();
+      if (activeTag === 'textarea' || activeTag === 'input') return;
+
       if (e.key === 'Escape') {
         setSelectedBlockIds([]);
         return;
       }
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        const activeTag = document.activeElement?.tagName.toLowerCase();
-        if (activeTag === 'textarea' || activeTag === 'input') return;
+
+      if (e.key === 'Backspace' || e.key === 'Delete' || (e.key === 'Enter' && !e.ctrlKey && !e.metaKey)) {
         e.preventDefault();
+        const firstIdx = blocks.findIndex((b) => selectedBlockIds.includes(b.id));
         const remaining = blocks.filter((b) => !selectedBlockIds.includes(b.id));
+        const newParaId = nextBlockId('p');
+        if (remaining.length === 0) {
+          const finalBlocks: MarkdownBlock[] = [{ id: newParaId, type: 'paragraph', text: '' }];
+          onChangeBlocks(finalBlocks);
+          setSelectedBlockIds([]);
+          setCursorOffset(0, true);
+          onSelectBlock(newParaId, 0);
+        } else {
+          onChangeBlocks(remaining);
+          setSelectedBlockIds([]);
+          const targetIdx = Math.min(Math.max(0, firstIdx), remaining.length - 1);
+          setCursorOffset(0, true);
+          onSelectBlock(remaining[targetIdx].id, 0);
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
+        navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
+        e.preventDefault();
+        const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
+        navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+        const remaining = blocks.filter((b) => !selectedBlockIds.includes(b.id));
+        const newParaId = nextBlockId('p');
         const finalBlocks: MarkdownBlock[] =
           remaining.length > 0
             ? remaining
-            : [{ id: nextBlockId('p'), type: 'paragraph', text: '' }];
+            : [{ id: newParaId, type: 'paragraph', text: '' }];
         onChangeBlocks(finalBlocks);
         setSelectedBlockIds([]);
+        setCursorOffset(0, true);
         onSelectBlock(finalBlocks[0].id, 0);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-        const activeTag = document.activeElement?.tagName.toLowerCase();
-        if (activeTag === 'textarea' || activeTag === 'input') return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault();
-        const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
-        navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+        try {
+          const clip = await navigator.clipboard.readText();
+          if (!clip) return;
+          const parsed = parseMarkdownToBlocks(clip);
+          const firstIdx = Math.max(
+            0,
+            blocks.findIndex((b) => selectedBlockIds.includes(b.id))
+          );
+          const remaining = blocks.filter((b) => !selectedBlockIds.includes(b.id));
+          remaining.splice(firstIdx, 0, ...parsed);
+          onChangeBlocks(remaining);
+          setSelectedBlockIds([]);
+          if (parsed[0]) {
+            onSelectBlock(parsed[0].id, 0);
+          }
+        } catch {
+          // ignore clipboard permission errors
+        }
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
-        const activeTag = document.activeElement?.tagName.toLowerCase();
-        if (activeTag === 'textarea' || activeTag === 'input') return;
+
+      // Typing a printable character while blocks are selected replaces the selection with a new paragraph
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
-        const chosen = blocks.filter((b) => selectedBlockIds.includes(b.id));
-        navigator.clipboard?.writeText(serializeBlocksToMarkdown(chosen));
+        const firstIdx = Math.max(
+          0,
+          blocks.findIndex((b) => selectedBlockIds.includes(b.id))
+        );
         const remaining = blocks.filter((b) => !selectedBlockIds.includes(b.id));
-        const finalBlocks: MarkdownBlock[] =
-          remaining.length > 0
-            ? remaining
-            : [{ id: nextBlockId('p'), type: 'paragraph', text: '' }];
-        onChangeBlocks(finalBlocks);
+        const newParaId = nextBlockId('p');
+        remaining.splice(firstIdx, 0, { id: newParaId, type: 'paragraph', text: e.key });
+        onChangeBlocks(remaining);
         setSelectedBlockIds([]);
+        setCursorOffset(1, true);
+        onSelectBlock(newParaId, 1);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -1355,40 +1473,38 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   };
 
   // Notion-style Marquee / Lasso Selection when dragging exclusively from the outer gutters / margins
-  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement;
-    mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+  // Starts a document-anchored sliding selection rectangle (lasso) with automatic viewport-edge scrolling
+  const startSlidingLassoSelection = (
+    startClientX: number,
+    startClientY: number,
+    startScrollLeft: number,
+    startScrollTop: number,
+    initialCurrentX?: number,
+    initialCurrentY?: number,
+    forceImmediate = false
+  ) => {
+    activeLassoCleanupRef.current?.();
 
-    // If clicking directly inside a block or interactive element, allow inline text selection
-    if (
-      target.closest('.cursiv-block') ||
-      target.closest('textarea') ||
-      target.closest('input') ||
-      target.closest('button') ||
-      target.closest('.cm-editor')
-    ) {
-      mouseDownInsideBlockRef.current = true;
-      if (selectedBlockIds.length > 0) {
-        setSelectedBlockIds([]);
-      }
-      return;
-    }
+    const scrollEl = scrollContainerRef.current;
+    const startDocX = startClientX + startScrollLeft;
+    const startDocY = startClientY + startScrollTop;
 
-    mouseDownInsideBlockRef.current = false;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let isDraggingLasso = false;
+    let isDraggingLasso = forceImmediate;
     let latestHitIds: string[] = [];
-    let lastX = startX;
-    let lastY = startY;
+    let lastClientX = initialCurrentX ?? startClientX;
+    let lastClientY = initialCurrentY ?? startClientY;
+    let autoScrollRaf: number | null = null;
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      lastX = moveEvent.clientX;
-      lastY = moveEvent.clientY;
-      const dist = Math.hypot(lastX - startX, lastY - startY);
+    const recomputeLasso = () => {
+      const curScrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+      const curScrollTop = scrollEl ? scrollEl.scrollTop : 0;
 
-      if (!isDraggingLasso && dist > 5) {
+      // Anchor point slides in lockstep with the document scroll position!
+      const anchorClientX = startDocX - curScrollLeft;
+      const anchorClientY = startDocY - curScrollTop;
+
+      const dist = Math.hypot(lastClientX - anchorClientX, lastClientY - anchorClientY);
+      if (!isDraggingLasso && dist > 4) {
         isDraggingLasso = true;
         onSelectBlockRef.current(null);
         if (document.activeElement instanceof HTMLElement) {
@@ -1399,12 +1515,30 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
 
       if (!isDraggingLasso) return;
 
-      setLassoBox({ startX, startY, currentX: lastX, currentY: lastY });
+      // Full logical selection rectangle in current viewport space (including scrolled-past regions)
+      const left = Math.min(anchorClientX, lastClientX);
+      const right = Math.max(anchorClientX, lastClientX);
+      const top = Math.min(anchorClientY, lastClientY);
+      const bottom = Math.max(anchorClientY, lastClientY);
 
-      const left = Math.min(startX, lastX);
-      const right = Math.max(startX, lastX);
-      const top = Math.min(startY, lastY);
-      const bottom = Math.max(startY, lastY);
+      // Clamp visual rectangle to the visible scroll container viewport so it slides cleanly
+      const bounds = scrollEl?.getBoundingClientRect();
+      const minVisX = bounds ? bounds.left : 0;
+      const maxVisX = bounds ? bounds.right : window.innerWidth;
+      const minVisY = bounds ? bounds.top : 0;
+      const maxVisY = bounds ? bounds.bottom : window.innerHeight;
+
+      const visStartX = Math.max(minVisX, Math.min(maxVisX, anchorClientX));
+      const visStartY = Math.max(minVisY, Math.min(maxVisY, anchorClientY));
+      const visCurX = Math.max(minVisX, Math.min(maxVisX, lastClientX));
+      const visCurY = Math.max(minVisY, Math.min(maxVisY, lastClientY));
+
+      setLassoBox({
+        startX: visStartX,
+        startY: visStartY,
+        currentX: visCurX,
+        currentY: visCurY,
+      });
 
       const hitIds: string[] = [];
       for (const b of blocksRef.current) {
@@ -1420,9 +1554,74 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       setSelectedBlockIds(hitIds);
     };
 
-    const onMouseUp = (upEvent: MouseEvent) => {
+    if (forceImmediate) {
+      onSelectBlockRef.current(null);
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      window.getSelection()?.removeAllRanges();
+      recomputeLasso();
+    }
+
+    const EDGE_ZONE = 95;
+    const MAX_SCROLL_SPEED = 24;
+
+    const tickAutoScroll = () => {
+      if (isDraggingLasso && scrollEl) {
+        const rect = scrollEl.getBoundingClientRect();
+        let dy = 0;
+
+        if (lastClientY > rect.bottom - EDGE_ZONE) {
+          const ratio = Math.min(
+            1,
+            Math.max(0, (lastClientY - (rect.bottom - EDGE_ZONE)) / EDGE_ZONE)
+          );
+          dy = Math.ceil(2 + ratio * ratio * MAX_SCROLL_SPEED);
+        } else if (lastClientY < rect.top + EDGE_ZONE) {
+          const ratio = Math.min(
+            1,
+            Math.max(0, (rect.top + EDGE_ZONE - lastClientY) / EDGE_ZONE)
+          );
+          dy = -Math.ceil(2 + ratio * ratio * MAX_SCROLL_SPEED);
+        }
+
+        if (dy !== 0) {
+          const prevTop = scrollEl.scrollTop;
+          scrollEl.scrollTop += dy;
+          if (scrollEl.scrollTop !== prevTop) {
+            recomputeLasso();
+          }
+        }
+      }
+      autoScrollRaf = window.requestAnimationFrame(tickAutoScroll);
+    };
+    autoScrollRaf = window.requestAnimationFrame(tickAutoScroll);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      lastClientX = moveEvent.clientX;
+      lastClientY = moveEvent.clientY;
+      recomputeLasso();
+    };
+
+    const onScroll = () => {
+      if (isDraggingLasso) {
+        recomputeLasso();
+      }
+    };
+
+    const cleanup = () => {
+      if (autoScrollRaf !== null) {
+        window.cancelAnimationFrame(autoScrollRaf);
+        autoScrollRaf = null;
+      }
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      scrollEl?.removeEventListener('scroll', onScroll);
+      activeLassoCleanupRef.current = null;
+    };
+
+    const onMouseUp = (upEvent: MouseEvent) => {
+      cleanup();
       setLassoBox(null);
 
       if (!isDraggingLasso) {
@@ -1432,8 +1631,12 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       justFinishedLassoRef.current = true;
       window.setTimeout(() => {
         justFinishedLassoRef.current = false;
-      }, 120);
+      }, 140);
 
+      const curScrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+      const curScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+      const finalAnchorX = startDocX - curScrollLeft;
+      const finalAnchorY = startDocY - curScrollTop;
       const finalX = upEvent.clientX;
       const finalY = upEvent.clientY;
 
@@ -1451,8 +1654,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           setPendingMousePoint({
             blockId: singleId,
             point: {
-              clientX: startX,
-              clientY: startY,
+              clientX: finalAnchorX,
+              clientY: finalAnchorY,
               endX: finalX,
               endY: finalY,
               seq: Date.now() + Math.random(),
@@ -1469,6 +1672,41 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
+    scrollEl?.addEventListener('scroll', onScroll, { passive: true });
+    activeLassoCleanupRef.current = cleanup;
+  };
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
+    mouseDownScrollRef.current = {
+      left: scrollContainerRef.current?.scrollLeft ?? 0,
+      top: scrollContainerRef.current?.scrollTop ?? 0,
+    };
+
+    // If clicking directly inside a block or interactive element, allow inline text selection
+    if (
+      target.closest('.cursiv-block') ||
+      target.closest('textarea') ||
+      target.closest('input') ||
+      target.closest('button') ||
+      target.closest('.cm-editor')
+    ) {
+      mouseDownInsideBlockRef.current = true;
+      if (selectedBlockIds.length > 0) {
+        setSelectedBlockIds([]);
+      }
+      return;
+    }
+
+    mouseDownInsideBlockRef.current = false;
+    startSlidingLassoSelection(
+      e.clientX,
+      e.clientY,
+      mouseDownScrollRef.current.left,
+      mouseDownScrollRef.current.top
+    );
   };
 
   // Context Menu Helpers
@@ -2329,6 +2567,19 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                           motionBlur={preferences.caretMotionBlur}
                           smartTypography={preferences.smartTypography}
                           placeholder="Titre du document..."
+                          onCrossBlockDrag={(startX, startY, curX, curY) => {
+                            if (blocksRef.current.length <= 1) return false;
+                            startSlidingLassoSelection(
+                              startX,
+                              startY,
+                              mouseDownScrollRef.current.left,
+                              mouseDownScrollRef.current.top,
+                              curX,
+                              curY,
+                              true
+                            );
+                            return true;
+                          }}
                           onCursorChange={(caret) => setCursorOffset(caret)}
                           onChange={(val, caret) => {
                             setCursorOffset(caret);
@@ -2467,6 +2718,19 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       motionBlur={preferences.caretMotionBlur}
                       smartTypography={preferences.smartTypography}
                       placeholder="Rédigez ou tapez / pour les commandes (/title, /table, /code...)"
+                      onCrossBlockDrag={(startX, startY, curX, curY) => {
+                        if (blocksRef.current.length <= 1) return false;
+                        startSlidingLassoSelection(
+                          startX,
+                          startY,
+                          mouseDownScrollRef.current.left,
+                          mouseDownScrollRef.current.top,
+                          curX,
+                          curY,
+                          true
+                        );
+                        return true;
+                      }}
                       onCursorChange={(caret) => setCursorOffset(caret)}
                       onChange={(val, caret) => {
                         setCursorOffset(caret);
