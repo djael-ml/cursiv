@@ -140,6 +140,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   } | null>(null);
   const mouseDownInsideBlockRef = useRef<boolean>(false);
   const mouseDownCoordsRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const justFinishedLassoRef = useRef<boolean>(false);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [collapsedHeadings, setCollapsedHeadings] = useState<Set<string>>(new Set());
   const [draggedBlockId, setDraggedBlockId] = useState<string | null>(null);
@@ -1285,8 +1286,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     mouseDownCoordsRef.current = { x: e.clientX, y: e.clientY };
-    setLassoBox(null);
 
+    // If clicking directly inside a block or interactive element, allow inline text selection
     if (
       target.closest('.cursiv-block') ||
       target.closest('textarea') ||
@@ -1302,6 +1303,99 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     }
 
     mouseDownInsideBlockRef.current = false;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let isDraggingLasso = false;
+    let latestHitIds: string[] = [];
+    let lastX = startX;
+    let lastY = startY;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      lastX = moveEvent.clientX;
+      lastY = moveEvent.clientY;
+      const dist = Math.hypot(lastX - startX, lastY - startY);
+
+      if (!isDraggingLasso && dist > 5) {
+        isDraggingLasso = true;
+        onSelectBlockRef.current(null);
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        window.getSelection()?.removeAllRanges();
+      }
+
+      if (!isDraggingLasso) return;
+
+      setLassoBox({ startX, startY, currentX: lastX, currentY: lastY });
+
+      const left = Math.min(startX, lastX);
+      const right = Math.max(startX, lastX);
+      const top = Math.min(startY, lastY);
+      const bottom = Math.max(startY, lastY);
+
+      const hitIds: string[] = [];
+      for (const b of blocksRef.current) {
+        const el = blockDomRefs.current[b.id];
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        const intersects = r.left <= right && r.right >= left && r.top <= bottom && r.bottom >= top;
+        if (intersects) {
+          hitIds.push(b.id);
+        }
+      }
+      latestHitIds = hitIds;
+      setSelectedBlockIds(hitIds);
+    };
+
+    const onMouseUp = (upEvent: MouseEvent) => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      setLassoBox(null);
+
+      if (!isDraggingLasso) {
+        return;
+      }
+
+      justFinishedLassoRef.current = true;
+      window.setTimeout(() => {
+        justFinishedLassoRef.current = false;
+      }, 120);
+
+      const finalX = upEvent.clientX;
+      const finalY = upEvent.clientY;
+
+      // If the selection rectangle intersected a single editable paragraph or heading block,
+      // select the exact text covered by the rectangle inside that block!
+      if (latestHitIds.length === 1) {
+        const singleId = latestHitIds[0];
+        const singleBlock = blocksRef.current.find((b) => b.id === singleId);
+        if (
+          singleBlock &&
+          (singleBlock.type === 'paragraph' || singleBlock.type === 'heading')
+        ) {
+          setSelectedBlockIds([]);
+          setInitialBlockSelection(null);
+          setPendingMousePoint({
+            blockId: singleId,
+            point: {
+              clientX: startX,
+              clientY: startY,
+              endX: finalX,
+              endY: finalY,
+              seq: Date.now() + Math.random(),
+            },
+          });
+          onSelectBlockRef.current(singleId);
+          return;
+        }
+      }
+
+      // Otherwise keep all intersected blocks selected (for multi-block Copy, Cut, Delete, or Context Menu)
+      setSelectedBlockIds(latestHitIds);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
   };
 
   // Context Menu Helpers
@@ -1427,7 +1521,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           e.clientX - mouseDownCoordsRef.current.x,
           e.clientY - mouseDownCoordsRef.current.y
         );
-        if (mouseDownInsideBlockRef.current || movedDist > 6) {
+        if (justFinishedLassoRef.current || mouseDownInsideBlockRef.current || movedDist > 6) {
           mouseDownInsideBlockRef.current = false;
           return;
         }

@@ -10,6 +10,8 @@ export interface SelectionRangeSpec {
 export interface PendingMousePoint {
   clientX: number;
   clientY: number;
+  endX?: number;
+  endY?: number;
   seq: number;
 }
 
@@ -36,6 +38,12 @@ interface InlinePageInputProps {
       direction?: 'forward' | 'backward' | 'none'
     ) => void
   ) => void;
+}
+
+interface CaretCoords {
+  x: number;
+  y: number;
+  height: number;
 }
 
 interface ToolbarCoords {
@@ -75,55 +83,209 @@ function applySmartTypographyTransforms(
 }
 
 /**
- * Resolves the exact character index (0..textLength) inside `hitTestDiv`'s single Text node
- * at viewport coordinates `(clientX, clientY)`. Clamps coordinates to `hitTestDiv` bounds so
- * dragging into the outer page margins still smoothly selects to the start/end of the line.
+ * Measures the exact sub-pixel (x, y, height) of the caret at `caretIndex` directly from
+ * `hitTestDiv`'s single unbroken Text node (`${text}\u200b`) using `document.createRange()`.
+ * Because no DOM elements are ever injected into `hitTestDiv`, word wrapping, tab stops,
+ * and line baselines remain 100% identical to the native `<textarea>`.
+ */
+function getCaretRectInHitTest(
+  hitTestDiv: HTMLDivElement,
+  textarea: HTMLTextAreaElement,
+  text: string,
+  caretIndex: number
+): CaretCoords {
+  const boxRect = hitTestDiv.getBoundingClientRect();
+  const scaleX = hitTestDiv.offsetWidth > 0 ? boxRect.width / hitTestDiv.offsetWidth : 1;
+  const scaleY = hitTestDiv.offsetHeight > 0 ? boxRect.height / hitTestDiv.offsetHeight : 1;
+  const computedStyle = window.getComputedStyle(textarea);
+  const lineHeight = parseFloat(computedStyle.lineHeight) || 26;
+  const fontSize = parseFloat(computedStyle.fontSize) || 16;
+  const defaultCaretH = Math.max(16, Math.min(44, fontSize * 1.22));
+  const defaultTopPad = Math.max(0, (lineHeight - defaultCaretH) / 2);
+
+  const textNode = hitTestDiv.firstChild;
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+    return { x: 0, y: defaultTopPad, height: defaultCaretH };
+  }
+
+  const L = text.length;
+  const safeOffset = Math.max(0, Math.min(caretIndex, L));
+  const range = document.createRange();
+
+  try {
+    // Case 1: Caret is before a non-newline character, OR at the very end of the text (where textNode[L] is '\u200b').
+    if (safeOffset === L || text[safeOffset] !== '\n') {
+      range.setStart(textNode, safeOffset);
+      range.setEnd(textNode, safeOffset + 1);
+      const rects = range.getClientRects();
+      const r = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (r && r.height > 0) {
+        return {
+          x: Math.max(0, (r.left - boxRect.left) / scaleX),
+          y: Math.max(0, (r.top - boxRect.top) / scaleY),
+          height: r.height / scaleY,
+        };
+      }
+    }
+
+    // Case 2: Caret is right before a '\n' (end of a non-empty line).
+    // Measure the right edge of the preceding character (safeOffset - 1).
+    if (safeOffset > 0 && text[safeOffset - 1] !== '\n') {
+      range.setStart(textNode, safeOffset - 1);
+      range.setEnd(textNode, safeOffset);
+      const rects = range.getClientRects();
+      const r = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (r && r.height > 0) {
+        return {
+          x: Math.max(0, (r.right - boxRect.left) / scaleX),
+          y: Math.max(0, (r.top - boxRect.top) / scaleY),
+          height: r.height / scaleY,
+        };
+      }
+    }
+
+    // Case 3: Caret is on an empty line (text[safeOffset] === '\n' and (safeOffset === 0 || text[safeOffset - 1] === '\n')).
+    let emptyLineSteps = 1;
+    let k = safeOffset - 1;
+    while (k >= 0 && text[k] === '\n') {
+      emptyLineSteps++;
+      k--;
+    }
+    if (k >= 0) {
+      range.setStart(textNode, k);
+      range.setEnd(textNode, k + 1);
+      const rects = range.getClientRects();
+      const r = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (r && r.height > 0) {
+        return {
+          x: 0,
+          y: Math.max(0, (r.top - boxRect.top) / scaleY + emptyLineSteps * lineHeight),
+          height: r.height / scaleY,
+        };
+      }
+    }
+
+    return {
+      x: 0,
+      y: safeOffset * lineHeight + defaultTopPad,
+      height: defaultCaretH,
+    };
+  } catch {
+    return { x: 0, y: defaultTopPad, height: defaultCaretH };
+  }
+}
+
+/**
+ * Resolves the exact character index (0..text.length) inside `hitTestDiv`'s single Text node
+ * at viewport coordinates `(clientX, clientY)` using pure `document.createRange()` glyph rects.
+ * Works deterministically regardless of pointer-events, user-select, z-index, or page zoom,
+ * and clamps cleanly when dragging into left/right/top/bottom page margins.
  */
 function getCharOffsetFromPoint(
   hitTestDiv: HTMLDivElement,
   textarea: HTMLTextAreaElement,
+  text: string,
   clientX: number,
-  clientY: number,
-  textLength: number
+  clientY: number
 ): number {
   const textNode = hitTestDiv.firstChild;
-  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
-    return textLength;
+  const L = text.length;
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE || L === 0) {
+    return 0;
   }
 
-  const rect = hitTestDiv.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) {
-    return textLength;
+  const boxRect = hitTestDiv.getBoundingClientRect();
+  if (boxRect.width === 0 || boxRect.height === 0) {
+    return L;
   }
 
-  const clampedX = Math.max(rect.left + 1, Math.min(rect.right - 1, clientX));
-  const clampedY = Math.max(rect.top + 1, Math.min(rect.bottom - 1, clientY));
+  const computedLineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 26;
+  const scaleY = hitTestDiv.offsetHeight > 0 ? boxRect.height / hitTestDiv.offsetHeight : 1;
+  const scaledLineH = computedLineHeight * scaleY;
 
-  const prevTextareaPE = textarea.style.pointerEvents;
-  textarea.style.pointerEvents = 'none';
-  hitTestDiv.style.pointerEvents = 'auto';
+  const range = document.createRange();
 
-  let resolvedOffset: number | null = null;
+  interface CaretCandidate {
+    offset: number;
+    x: number;
+    top: number;
+    bottom: number;
+  }
+
+  const candidates: CaretCandidate[] = [];
+  let lastLineTop = boxRect.top;
+
   try {
-    const docAny = document as Document & {
-      caretRangeFromPoint?: (x: number, y: number) => Range | null;
-    };
-    const range = docAny.caretRangeFromPoint?.(clampedX, clampedY);
-    if (range && hitTestDiv.contains(range.startContainer)) {
-      if (range.startContainer === textNode) {
-        resolvedOffset = Math.min(textLength, Math.max(0, range.startOffset));
-      } else if (range.startContainer === hitTestDiv) {
-        resolvedOffset = range.startOffset === 0 ? 0 : textLength;
+    for (let i = 0; i <= L; i++) {
+      if (i === L || text[i] !== '\n') {
+        range.setStart(textNode, i);
+        range.setEnd(textNode, i + 1);
+        const rects = range.getClientRects();
+        const r = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+        if (r && r.height > 0) {
+          candidates.push({
+            offset: i,
+            x: r.left,
+            top: r.top,
+            bottom: r.bottom,
+          });
+          if (i < L) {
+            candidates.push({
+              offset: i + 1,
+              x: r.right,
+              top: r.top,
+              bottom: r.bottom,
+            });
+          }
+          lastLineTop = r.top;
+        }
+      } else if (i === 0 || text[i - 1] === '\n') {
+        const top = i === 0 ? boxRect.top : lastLineTop + scaledLineH;
+        const bottom = top + scaledLineH;
+        candidates.push({
+          offset: i,
+          x: boxRect.left,
+          top,
+          bottom,
+        });
+        lastLineTop = top;
       }
     }
   } catch {
-    resolvedOffset = null;
-  } finally {
-    hitTestDiv.style.pointerEvents = 'none';
-    textarea.style.pointerEvents = prevTextareaPE;
+    return L;
   }
 
-  return resolvedOffset ?? textLength;
+  if (candidates.length === 0) {
+    return L;
+  }
+
+  let minDy = Infinity;
+  for (const c of candidates) {
+    const dy =
+      clientY < c.top ? c.top - clientY : clientY > c.bottom ? clientY - c.bottom : 0;
+    if (dy < minDy) {
+      minDy = dy;
+    }
+  }
+
+  let bestOffset = candidates[0].offset;
+  let bestDx = Infinity;
+  let bestDy = Infinity;
+
+  for (const c of candidates) {
+    const dy =
+      clientY < c.top ? c.top - clientY : clientY > c.bottom ? clientY - c.bottom : 0;
+    if (dy <= minDy + 4) {
+      const dx = Math.abs(clientX - c.x);
+      if (dx < bestDx - 0.5 || (Math.abs(dx - bestDx) <= 0.5 && dy < bestDy)) {
+        bestDx = dx;
+        bestDy = dy;
+        bestOffset = c.offset;
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(L, bestOffset));
 }
 
 export const InlinePageInput: React.FC<InlinePageInputProps> = ({
@@ -135,6 +297,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   initialSelection = null,
   pendingMouseDownPoint = null,
   externalCaretVersion = 0,
+  motionBlur = true,
   smartTypography = true,
   className = '',
   style,
@@ -146,6 +309,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   const hitTestRef = useRef<HTMLDivElement | null>(null);
   const pendingSelectionRef = useRef<SelectionRangeSpec | null>(null);
   const handledMouseSeqRef = useRef<number | null>(null);
+  const motionTimerRef = useRef<number | null>(null);
+  const activeDragCleanupRef = useRef<(() => void) | null>(null);
   const onCursorChangeRef = useRef(onCursorChange);
   onCursorChangeRef.current = onCursorChange;
 
@@ -166,9 +331,35 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     return { start: pos, end: pos, direction: 'none' };
   });
 
+  const caretOffset =
+    selRange.direction === 'backward' ? selRange.start : selRange.end;
   const hasSelection = selRange.start !== selRange.end;
+
   const [isFocused, setIsFocused] = useState<boolean>(false);
+  const [isCaretMoving, setIsCaretMoving] = useState<boolean>(false);
+  const [caretCoords, setCaretCoords] = useState<CaretCoords>({
+    x: 0,
+    y: 2,
+    height: 20,
+  });
   const [toolbarCoords, setToolbarCoords] = useState<ToolbarCoords>({ x: 0, y: 0 });
+
+  useEffect(() => {
+    return () => {
+      if (motionTimerRef.current) window.clearTimeout(motionTimerRef.current);
+      activeDragCleanupRef.current?.();
+    };
+  }, []);
+
+  const triggerCaretMotion = useCallback(() => {
+    setIsCaretMoving(true);
+    if (motionTimerRef.current) {
+      window.clearTimeout(motionTimerRef.current);
+    }
+    motionTimerRef.current = window.setTimeout(() => {
+      setIsCaretMoving(false);
+    }, 110);
+  }, []);
 
   const setProgrammaticSelection = useCallback(
     (
@@ -183,8 +374,33 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       setSelRange(spec);
       const activePos = direction === 'backward' ? s : e;
       onCursorChangeRef.current?.(activePos);
+      triggerCaretMotion();
     },
-    []
+    [triggerCaretMotion]
+  );
+
+  // Measure exact sub-pixel caret coordinates from hitTestRef's single unbroken Text node
+  const measureCaretDomCoords = useCallback(
+    (targetOffset?: number) => {
+      const el = textareaRef.current;
+      const hitTest = hitTestRef.current;
+      if (!el || !hitTest) return;
+
+      const offsetToMeasure = targetOffset !== undefined ? targetOffset : caretOffset;
+      const next = getCaretRectInHitTest(hitTest, el, value, offsetToMeasure);
+
+      setCaretCoords((prev) => {
+        if (
+          Math.abs(prev.x - next.x) < 0.2 &&
+          Math.abs(prev.y - next.y) < 0.2 &&
+          Math.abs(prev.height - next.height) < 0.2
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    },
+    [value, caretOffset]
   );
 
   // Measure selection bounding box inside hitTestRef's single Text node for the floating mini toolbar
@@ -202,10 +418,15 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         range.setEnd(textNode, Math.min(maxLen, Math.max(0, end)));
         const selRect = range.getBoundingClientRect();
         const boxRect = hitTest.getBoundingClientRect();
+        const scaleX = hitTest.offsetWidth > 0 ? boxRect.width / hitTest.offsetWidth : 1;
+        const scaleY = hitTest.offsetHeight > 0 ? boxRect.height / hitTest.offsetHeight : 1;
         if (selRect.width === 0 && selRect.height === 0) return;
 
-        const nextX = Math.max(0, Math.min(boxRect.width - 180, selRect.left - boxRect.left));
-        const nextY = Math.max(0, selRect.top - boxRect.top);
+        const nextX = Math.max(
+          0,
+          Math.min(hitTest.offsetWidth - 180, (selRect.left - boxRect.left) / scaleX)
+        );
+        const nextY = Math.max(0, (selRect.top - boxRect.top) / scaleY);
         setToolbarCoords({ x: nextX, y: nextY });
       } catch {
         // Ignore range errors
@@ -233,95 +454,186 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
 
   useLayoutEffect(() => {
     syncTextareaHeight();
-  });
+    measureCaretDomCoords();
+  }, [value, caretOffset, syncTextareaHeight, measureCaretDomCoords]);
 
   useEffect(() => {
     const hitTest = hitTestRef.current;
     if (!hitTest || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
       syncTextareaHeight();
+      measureCaretDomCoords();
     });
     ro.observe(hitTest);
     return () => ro.disconnect();
-  }, [syncTextareaHeight]);
+  }, [syncTextareaHeight, measureCaretDomCoords]);
 
-  // Handle mouseDown activation (click placement AND live left-to-right / right-to-left drag selection)
-  useLayoutEffect(() => {
-    const el = textareaRef.current;
-    const hitTest = hitTestRef.current;
-    if (!el || !hitTest || !pendingMouseDownPoint) return;
-    if (handledMouseSeqRef.current === pendingMouseDownPoint.seq) return;
-    handledMouseSeqRef.current = pendingMouseDownPoint.seq;
+  // Unified pointer selection starter (used both when activating an inactive block AND when clicking/dragging inside an active block)
+  const startPointerSelection = useCallback(
+    (clientX: number, clientY: number, shiftKey = false, endX?: number, endY?: number) => {
+      const el = textareaRef.current;
+      const hitTest = hitTestRef.current;
+      if (!el || !hitTest) return;
 
-    syncTextareaHeight();
-    el.focus({ preventScroll: true });
-    setIsFocused(true);
+      activeDragCleanupRef.current?.();
+      syncTextareaHeight();
+      el.focus({ preventScroll: true });
+      setIsFocused(true);
 
-    const anchorOffset = getCharOffsetFromPoint(
-      hitTest,
-      el,
-      pendingMouseDownPoint.clientX,
-      pendingMouseDownPoint.clientY,
-      el.value.length
-    );
+      const textVal = el.value;
 
-    el.setSelectionRange(anchorOffset, anchorOffset, 'none');
-    setSelRange({ start: anchorOffset, end: anchorOffset, direction: 'none' });
-    onCursorChangeRef.current?.(anchorOffset);
+      // If this came from a completed 2D lasso rectangle over a single block:
+      if (endX !== undefined && endY !== undefined) {
+        const left = Math.min(clientX, endX);
+        const top = Math.min(clientY, endY);
+        const right = Math.max(clientX, endX);
+        const bottom = Math.max(clientY, endY);
 
-    const onWindowMouseMove = (moveEvent: MouseEvent) => {
-      const curEl = textareaRef.current;
-      const curHitTest = hitTestRef.current;
-      if (!curEl || !curHitTest) return;
+        const offsetA = getCharOffsetFromPoint(hitTest, el, textVal, left, top);
+        const offsetB = getCharOffsetFromPoint(hitTest, el, textVal, right, bottom);
+        let start = Math.min(offsetA, offsetB);
+        let end = Math.max(offsetA, offsetB);
 
-      const focusOffset = getCharOffsetFromPoint(
-        curHitTest,
-        curEl,
-        moveEvent.clientX,
-        moveEvent.clientY,
-        curEl.value.length
+        // If the lasso rectangle touched the margin beside a line so offsetA === offsetB,
+        // select that entire line so the selection rectangle always selects the touched text!
+        if (start === end && textVal.length > 0) {
+          const lineStart = textVal.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+          const nextNl = textVal.indexOf('\n', start);
+          const lineEnd = nextNl === -1 ? textVal.length : nextNl;
+          if (lineEnd > lineStart) {
+            start = lineStart;
+            end = lineEnd;
+          } else {
+            start = 0;
+            end = textVal.length;
+          }
+        }
+
+        const dir: 'forward' | 'backward' =
+          endX < clientX || endY < clientY ? 'backward' : 'forward';
+        const activeHead = dir === 'backward' ? start : end;
+
+        el.setSelectionRange(start, end, dir);
+        setSelRange({ start, end, direction: dir });
+        onCursorChangeRef.current?.(activeHead);
+        measureCaretDomCoords(activeHead);
+        if (start !== end) {
+          measureSelectionToolbarCoords(start, end);
+        }
+        return;
+      }
+
+      const clickedOffset = getCharOffsetFromPoint(
+        hitTest,
+        el,
+        textVal,
+        clientX,
+        clientY
       );
-      const start = Math.min(anchorOffset, focusOffset);
-      const end = Math.max(anchorOffset, focusOffset);
-      const dir: 'forward' | 'backward' | 'none' =
-        focusOffset < anchorOffset
+
+      const anchorOffset = shiftKey
+        ? selRange.direction === 'backward'
+          ? selRange.end
+          : selRange.start
+        : clickedOffset;
+
+      const initStart = Math.min(anchorOffset, clickedOffset);
+      const initEnd = Math.max(anchorOffset, clickedOffset);
+      const initDir: 'forward' | 'backward' | 'none' =
+        clickedOffset < anchorOffset
           ? 'backward'
-          : focusOffset > anchorOffset
+          : clickedOffset > anchorOffset
           ? 'forward'
           : 'none';
 
-      if (document.activeElement !== curEl) {
-        curEl.focus({ preventScroll: true });
+      el.setSelectionRange(initStart, initEnd, initDir);
+      setSelRange({ start: initStart, end: initEnd, direction: initDir });
+      onCursorChangeRef.current?.(clickedOffset);
+      triggerCaretMotion();
+      measureCaretDomCoords(clickedOffset);
+      if (initStart !== initEnd) {
+        measureSelectionToolbarCoords(initStart, initEnd);
       }
-      curEl.setSelectionRange(start, end, dir);
-      setSelRange({ start, end, direction: dir });
-      onCursorChangeRef.current?.(focusOffset);
-      if (start !== end) {
-        measureSelectionToolbarCoords(start, end);
-      }
-    };
 
-    const onWindowMouseUp = () => {
-      window.removeEventListener('mousemove', onWindowMouseMove);
-      window.removeEventListener('mouseup', onWindowMouseUp);
-      const curEl = textareaRef.current;
-      if (curEl) {
-        const s = curEl.selectionStart ?? 0;
-        const e = curEl.selectionEnd ?? 0;
-        if (s !== e) {
-          measureSelectionToolbarCoords(s, e);
+      const onWindowMouseMove = (moveEvent: MouseEvent) => {
+        const curEl = textareaRef.current;
+        const curHitTest = hitTestRef.current;
+        if (!curEl || !curHitTest) return;
+
+        const focusOffset = getCharOffsetFromPoint(
+          curHitTest,
+          curEl,
+          curEl.value,
+          moveEvent.clientX,
+          moveEvent.clientY
+        );
+        const start = Math.min(anchorOffset, focusOffset);
+        const end = Math.max(anchorOffset, focusOffset);
+        const dir: 'forward' | 'backward' | 'none' =
+          focusOffset < anchorOffset
+            ? 'backward'
+            : focusOffset > anchorOffset
+            ? 'forward'
+            : 'none';
+
+        if (document.activeElement !== curEl) {
+          curEl.focus({ preventScroll: true });
         }
-      }
-    };
+        curEl.setSelectionRange(start, end, dir);
+        setSelRange({ start, end, direction: dir });
+        onCursorChangeRef.current?.(focusOffset);
+        measureCaretDomCoords(focusOffset);
+        if (start !== end) {
+          measureSelectionToolbarCoords(start, end);
+        }
+      };
 
-    window.addEventListener('mousemove', onWindowMouseMove);
-    window.addEventListener('mouseup', onWindowMouseUp);
+      const onWindowMouseUp = () => {
+        window.removeEventListener('mousemove', onWindowMouseMove);
+        window.removeEventListener('mouseup', onWindowMouseUp);
+        activeDragCleanupRef.current = null;
+        const curEl = textareaRef.current;
+        if (curEl) {
+          const s = curEl.selectionStart ?? 0;
+          const e = curEl.selectionEnd ?? 0;
+          if (s !== e) {
+            measureSelectionToolbarCoords(s, e);
+          }
+        }
+      };
 
-    return () => {
-      window.removeEventListener('mousemove', onWindowMouseMove);
-      window.removeEventListener('mouseup', onWindowMouseUp);
-    };
-  }, [pendingMouseDownPoint, measureSelectionToolbarCoords, syncTextareaHeight]);
+      window.addEventListener('mousemove', onWindowMouseMove);
+      window.addEventListener('mouseup', onWindowMouseUp);
+      activeDragCleanupRef.current = () => {
+        window.removeEventListener('mousemove', onWindowMouseMove);
+        window.removeEventListener('mouseup', onWindowMouseUp);
+      };
+    },
+    [
+      selRange.direction,
+      selRange.end,
+      selRange.start,
+      syncTextareaHeight,
+      measureCaretDomCoords,
+      measureSelectionToolbarCoords,
+      triggerCaretMotion,
+    ]
+  );
+
+  // Handle mouseDown activation forwarded from an inactive block (click placement, live drag selection, or single-block lasso selection)
+  useLayoutEffect(() => {
+    if (!pendingMouseDownPoint) return;
+    if (handledMouseSeqRef.current === pendingMouseDownPoint.seq) return;
+    handledMouseSeqRef.current = pendingMouseDownPoint.seq;
+
+    startPointerSelection(
+      pendingMouseDownPoint.clientX,
+      pendingMouseDownPoint.clientY,
+      false,
+      pendingMouseDownPoint.endX,
+      pendingMouseDownPoint.endY
+    );
+  }, [pendingMouseDownPoint, startPointerSelection]);
 
   // Mount-only (or explicit externalCaretVersion) focus and selection placement when activated via keyboard
   useEffect(() => {
@@ -346,6 +658,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       const dir = initialSelection.direction || 'forward';
       el.setSelectionRange(start, end, dir);
       setSelRange({ start, end, direction: dir });
+      measureCaretDomCoords(dir === 'backward' ? start : end);
       if (start !== end) {
         measureSelectionToolbarCoords(start, end);
       }
@@ -358,6 +671,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         : el.value.length;
     el.setSelectionRange(targetPos, targetPos, 'none');
     setSelRange({ start: targetPos, end: targetPos, direction: 'none' });
+    measureCaretDomCoords(targetPos);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoFocus, externalCaretVersion]);
 
@@ -371,14 +685,16 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       pendingSelectionRef.current = null;
       const clampedStart = Math.min(value.length, Math.max(0, pending.start));
       const clampedEnd = Math.min(value.length, Math.max(clampedStart, pending.end));
-      el.setSelectionRange(clampedStart, clampedEnd, pending.direction || 'forward');
+      const dir = pending.direction || 'forward';
+      el.setSelectionRange(clampedStart, clampedEnd, dir);
+      measureCaretDomCoords(dir === 'backward' ? clampedStart : clampedEnd);
       if (clampedStart !== clampedEnd) {
         measureSelectionToolbarCoords(clampedStart, clampedEnd);
       }
     }
-  }, [value, measureSelectionToolbarCoords]);
+  }, [value, measureCaretDomCoords, measureSelectionToolbarCoords]);
 
-  // Sync selection state from user interaction on the native <textarea>
+  // Sync selection state from user keyboard/mouse interaction on the native <textarea>
   const syncSelectionFromDom = useCallback(() => {
     const el = textareaRef.current;
     if (!el || pendingSelectionRef.current) return;
@@ -392,15 +708,17 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       if (prev.start === selStart && prev.end === selEnd && prev.direction === dir) {
         return prev;
       }
+      triggerCaretMotion();
       return { start: selStart, end: selEnd, direction: dir };
     });
 
     onCursorChangeRef.current?.(activeCaret);
+    measureCaretDomCoords(activeCaret);
 
     if (selStart !== selEnd) {
       measureSelectionToolbarCoords(selStart, selEnd);
     }
-  }, [measureSelectionToolbarCoords]);
+  }, [measureCaretDomCoords, measureSelectionToolbarCoords, triggerCaretMotion]);
 
   const wrapSelectionWith = (prefix: string, suffix = prefix) => {
     const el = textareaRef.current;
@@ -494,11 +812,11 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         </div>
       )}
 
-      {/* 1. Grid Auto-Sizer & Single-Text-Node Hit-Test Layer (100% identical metrics to native textarea) */}
+      {/* 1. Grid Auto-Sizer & Single-Text-Node Range Geometry Layer (100% identical metrics to native textarea) */}
       <div
         ref={hitTestRef}
         aria-hidden="true"
-        className="pointer-events-none select-none whitespace-pre-wrap break-words min-h-[1.6em] m-0 p-0 border-0"
+        className="pointer-events-none whitespace-pre-wrap break-words min-h-[1.6em] m-0 p-0 border-0"
         style={{
           gridArea: '1 / 1 / 2 / 2',
           opacity: 0,
@@ -508,13 +826,17 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
           fontStyle: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
           tabSize: 4,
+          boxSizing: 'border-box',
         }}
       >
         {`${value}\u200b`}
       </div>
 
-      {/* 2. Direct Native Visible Textarea (100% Native Caret, 100% Native Click & Drag Selection, Zero Misalignment) */}
+      {/* 2. Direct Native Visible Textarea (Renders text & ::selection directly, zero layout shift) */}
       <textarea
         ref={textareaRef}
         value={value}
@@ -531,11 +853,20 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
             e.currentTarget.scrollLeft = 0;
           }
         }}
+        onMouseDown={(e) => {
+          if (e.button === 0 && e.detail === 1) {
+            e.preventDefault();
+            startPointerSelection(e.clientX, e.clientY, e.shiftKey);
+          }
+        }}
         onFocus={() => {
           setIsFocused(true);
           syncSelectionFromDom();
         }}
-        onBlur={() => setIsFocused(false)}
+        onBlur={() => {
+          setIsFocused(false);
+          setIsCaretMoving(false);
+        }}
         onPaste={(e) => {
           const el = textareaRef.current;
           if (!el) return;
@@ -568,6 +899,7 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
               setProgrammaticSelection(nextPos, nextPos, 'none');
             }
           }
+          triggerCaretMotion();
           if (!pendingSelectionRef.current) {
             setSelRange({ start: nextPos, end: nextPos, direction: 'none' });
           }
@@ -576,17 +908,15 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         onSelect={syncSelectionFromDom}
         onKeyUp={syncSelectionFromDom}
         onMouseUp={syncSelectionFromDom}
-        onMouseMove={(e) => {
-          if (e.buttons === 1) syncSelectionFromDom();
-        }}
         onClick={syncSelectionFromDom}
         onKeyDown={(e) => {
+          triggerCaretMotion();
           onKeyDown?.(e, setProgrammaticSelection);
           if (!e.defaultPrevented) {
             requestAnimationFrame(syncSelectionFromDom);
           }
         }}
-        className="no-export cursiv-native-textarea relative z-20 w-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
+        className="no-export cursiv-native-textarea cursiv-native-textarea-custom-caret relative z-20 w-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
         style={{
           gridArea: '1 / 1 / 2 / 2',
           fontFamily: 'inherit',
@@ -595,9 +925,29 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
           fontStyle: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
           tabSize: 4,
+          boxSizing: 'border-box',
         }}
       />
+
+      {/* 3. Smooth Gliding Cursiv Caret (100% aligned via Range geometry on single-Text-node hitTestRef) */}
+      {isFocused && !hasSelection && (
+        <div
+          aria-hidden="true"
+          className={`no-print no-export cursiv-word-caret ${
+            isCaretMoving ? 'cursiv-word-caret-moving' : ''
+          } ${
+            motionBlur && isCaretMoving ? 'cursiv-word-caret-motion-blur' : ''
+          } pointer-events-none absolute left-0 top-0 z-30`}
+          style={{
+            height: `${caretCoords.height}px`,
+            transform: `translate3d(${caretCoords.x}px, ${caretCoords.y}px, 0)`,
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -115,10 +115,19 @@ html, body {
   will-change: transform, height, filter;
 }
 
+.cursiv-word-caret-moving {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
 .cursiv-word-caret-motion-blur {
   filter: blur(0.55px);
   box-shadow: -3.5px 0 7px color-mix(in srgb, var(--caret-color, var(--primary-color)) 40%, transparent),
               0 0 6px color-mix(in srgb, var(--caret-color, var(--primary-color)) 30%, transparent);
+}
+
+.cursiv-native-textarea-custom-caret {
+  caret-color: transparent !important;
 }
 
 .cursiv-native-textarea {
@@ -145,9 +154,10 @@ html, body {
 
 /* Notion-style Lasso Selection Rectangle & Block Highlight */
 .cursiv-lasso-rect {
-  background-color: color-mix(in srgb, var(--primary-color) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--primary-color) 55%, transparent);
-  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--primary-color) 15%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--primary-color) 68%, transparent);
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--primary-color) 18%, transparent);
+  border-radius: 6px;
   pointer-events: none;
 }
 
