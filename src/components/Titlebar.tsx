@@ -674,7 +674,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               </button>
               <div className="my-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
               <div className="px-3 py-1.5 text-[11px] opacity-75 leading-relaxed">
-                <div className="font-semibold">Cursiv. v1.17.0</div>
+                <div className="font-semibold">Cursiv. v1.17.2</div>
                 <div>Conçu et développé par <span className="font-semibold">Djaël Mola</span></div>
               </div>
             </div>

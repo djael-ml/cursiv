@@ -121,18 +121,26 @@ html, body {
               0 0 6px color-mix(in srgb, var(--caret-color, var(--primary-color)) 30%, transparent);
 }
 
-.cursiv-transparent-textarea {
-  color: transparent !important;
-  caret-color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
+.cursiv-native-textarea {
+  color: var(--text-color);
+  caret-color: var(--caret-color, var(--primary-color));
+  -webkit-text-fill-color: currentColor;
   tab-size: 4;
   -moz-tab-size: 4;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
-.cursiv-transparent-textarea::selection {
-  background-color: color-mix(in srgb, var(--primary-color) 28%, transparent);
-  color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
+.cursiv-native-textarea::placeholder {
+  color: var(--meta-content-color);
+  opacity: 0.35;
+}
+
+.cursiv-native-textarea::selection,
+.cursiv-editor-sheet ::selection {
+  background-color: color-mix(in srgb, var(--primary-color) 32%, transparent);
+  color: var(--text-color);
+  -webkit-text-fill-color: var(--text-color);
 }
 
 /* Notion-style Lasso Selection Rectangle & Block Highlight */

@@ -7,6 +7,12 @@ export interface SelectionRangeSpec {
   direction?: 'forward' | 'backward' | 'none';
 }
 
+export interface PendingMousePoint {
+  clientX: number;
+  clientY: number;
+  seq: number;
+}
+
 interface InlinePageInputProps {
   value: string;
   placeholder?: string;
@@ -14,6 +20,7 @@ interface InlinePageInputProps {
   autoFocus?: boolean;
   initialCaretOffset?: number | null;
   initialSelection?: SelectionRangeSpec | null;
+  pendingMouseDownPoint?: PendingMousePoint | null;
   externalCaretVersion?: number;
   motionBlur?: boolean;
   smartTypography?: boolean;
@@ -31,11 +38,9 @@ interface InlinePageInputProps {
   ) => void;
 }
 
-interface CaretCoords {
+interface ToolbarCoords {
   x: number;
   y: number;
-  height: number;
-  visible: boolean;
 }
 
 function applySmartTypographyTransforms(
@@ -70,132 +75,55 @@ function applySmartTypographyTransforms(
 }
 
 /**
- * Renders inline Markdown tokens with 1:1 identical character advance width
- * so the transparent textarea overlay and Word gliding caret stay 100% aligned,
- * while styling bold, italic, code, highlight, strikethrough, and subtle syntax markers.
+ * Resolves the exact character index (0..textLength) inside `hitTestDiv`'s single Text node
+ * at viewport coordinates `(clientX, clientY)`. Clamps coordinates to `hitTestDiv` bounds so
+ * dragging into the outer page margins still smoothly selects to the start/end of the line.
  */
-function renderMetricLockedMarkdown(
-  text: string,
-  caretOffset: number | null,
-  justTypedIndex: number | null
-): React.ReactNode {
-  if (!text) return null;
-
-  const pattern =
-    /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|~~[^~\n]+~~|==[^=\n]+==|`[^`\n]+`|\[[^\]\n]+\]\([^)\n]+\)|\$[^$\n]+\$)/g;
-
-  const nodes: React.ReactNode[] = [];
-  let lastIdx = 0;
-  let match: RegExpExecArray | null;
-
-  const renderCharRange = (
-    slice: string,
-    startOffset: number,
-    extraClass = '',
-    extraStyle?: React.CSSProperties
-  ) => {
-    if (
-      justTypedIndex !== null &&
-      justTypedIndex >= startOffset &&
-      justTypedIndex < startOffset + slice.length
-    ) {
-      const rel = justTypedIndex - startOffset;
-      const before = slice.slice(0, rel);
-      const typedChar = slice[rel];
-      const after = slice.slice(rel + 1);
-      return (
-        <span key={startOffset} className={extraClass} style={extraStyle}>
-          {before}
-          <span key={`glide-${justTypedIndex}-${typedChar}`} className="cursiv-char-glide">
-            {typedChar}
-          </span>
-          {after}
-        </span>
-      );
-    }
-    return (
-      <span key={startOffset} className={extraClass} style={extraStyle}>
-        {slice}
-      </span>
-    );
-  };
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIdx) {
-      const plain = text.slice(lastIdx, match.index);
-      nodes.push(renderCharRange(plain, lastIdx));
-    }
-
-    const raw = match[0];
-    const start = match.index;
-    const end = start + raw.length;
-    const isCursorInside =
-      caretOffset !== null && caretOffset >= start && caretOffset <= end;
-    const markerClass = isCursorInside ? 'opacity-45' : 'opacity-25';
-
-    if (raw.startsWith('**') && raw.endsWith('**') && raw.length > 4) {
-      nodes.push(
-        <span key={start}>
-          <span className={markerClass}>**</span>
-          {renderCharRange(raw.slice(2, -2), start + 2, '', {
-            textShadow: '0.028em 0 0 currentColor, -0.015em 0 0 currentColor',
-          })}
-          <span className={markerClass}>**</span>
-        </span>
-      );
-    } else if (raw.startsWith('*') && raw.endsWith('*') && raw.length > 2) {
-      nodes.push(
-        <span key={start}>
-          <span className={markerClass}>*</span>
-          {renderCharRange(raw.slice(1, -1), start + 1, 'italic')}
-          <span className={markerClass}>*</span>
-        </span>
-      );
-    } else if (raw.startsWith('~~') && raw.endsWith('~~') && raw.length > 4) {
-      nodes.push(
-        <span key={start}>
-          <span className={markerClass}>~~</span>
-          {renderCharRange(raw.slice(2, -2), start + 2, 'line-through opacity-75')}
-          <span className={markerClass}>~~</span>
-        </span>
-      );
-    } else if (raw.startsWith('==') && raw.endsWith('==') && raw.length > 4) {
-      nodes.push(
-        <span key={start}>
-          <span className={markerClass}>==</span>
-          {renderCharRange(raw.slice(2, -2), start + 2, 'rounded-xs', {
-            backgroundColor: 'var(--highlight-bg)',
-          })}
-          <span className={markerClass}>==</span>
-        </span>
-      );
-    } else if (raw.startsWith('`') && raw.endsWith('`') && raw.length > 2) {
-      nodes.push(
-        <span key={start}>
-          <span className={markerClass}>`</span>
-          {renderCharRange(raw.slice(1, -1), start + 1, 'rounded-xs', {
-            backgroundColor: 'var(--code-bg-color)',
-            color: 'var(--primary-color)',
-          })}
-          <span className={markerClass}>`</span>
-        </span>
-      );
-    } else {
-      nodes.push(
-        renderCharRange(raw, start, '', {
-          color: 'var(--primary-color)',
-        })
-      );
-    }
-
-    lastIdx = end;
+function getCharOffsetFromPoint(
+  hitTestDiv: HTMLDivElement,
+  textarea: HTMLTextAreaElement,
+  clientX: number,
+  clientY: number,
+  textLength: number
+): number {
+  const textNode = hitTestDiv.firstChild;
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+    return textLength;
   }
 
-  if (lastIdx < text.length) {
-    nodes.push(renderCharRange(text.slice(lastIdx), lastIdx));
+  const rect = hitTestDiv.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) {
+    return textLength;
   }
 
-  return nodes;
+  const clampedX = Math.max(rect.left + 1, Math.min(rect.right - 1, clientX));
+  const clampedY = Math.max(rect.top + 1, Math.min(rect.bottom - 1, clientY));
+
+  const prevTextareaPE = textarea.style.pointerEvents;
+  textarea.style.pointerEvents = 'none';
+  hitTestDiv.style.pointerEvents = 'auto';
+
+  let resolvedOffset: number | null = null;
+  try {
+    const docAny = document as Document & {
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    const range = docAny.caretRangeFromPoint?.(clampedX, clampedY);
+    if (range && hitTestDiv.contains(range.startContainer)) {
+      if (range.startContainer === textNode) {
+        resolvedOffset = Math.min(textLength, Math.max(0, range.startOffset));
+      } else if (range.startContainer === hitTestDiv) {
+        resolvedOffset = range.startOffset === 0 ? 0 : textLength;
+      }
+    }
+  } catch {
+    resolvedOffset = null;
+  } finally {
+    hitTestDiv.style.pointerEvents = 'none';
+    textarea.style.pointerEvents = prevTextareaPE;
+  }
+
+  return resolvedOffset ?? textLength;
 }
 
 export const InlinePageInput: React.FC<InlinePageInputProps> = ({
@@ -205,8 +133,8 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   autoFocus = true,
   initialCaretOffset = null,
   initialSelection = null,
+  pendingMouseDownPoint = null,
   externalCaretVersion = 0,
-  motionBlur = true,
   smartTypography = true,
   className = '',
   style,
@@ -215,11 +143,9 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
   onKeyDown,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const mirrorRef = useRef<HTMLDivElement | null>(null);
-  const markerRef = useRef<HTMLSpanElement | null>(null);
-  const prevValueRef = useRef<string>(value);
-  const motionTimerRef = useRef<number | null>(null);
+  const hitTestRef = useRef<HTMLDivElement | null>(null);
   const pendingSelectionRef = useRef<SelectionRangeSpec | null>(null);
+  const handledMouseSeqRef = useRef<number | null>(null);
   const onCursorChangeRef = useRef(onCursorChange);
   onCursorChangeRef.current = onCursorChange;
 
@@ -240,19 +166,9 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     return { start: pos, end: pos, direction: 'none' };
   });
 
-  const caretOffset =
-    selRange.direction === 'backward' ? selRange.start : selRange.end;
   const hasSelection = selRange.start !== selRange.end;
-
-  const [justTypedIndex, setJustTypedIndex] = useState<number | null>(null);
   const [isFocused, setIsFocused] = useState<boolean>(false);
-  const [isCaretMoving, setIsCaretMoving] = useState<boolean>(false);
-  const [caretCoords, setCaretCoords] = useState<CaretCoords>({
-    x: 0,
-    y: 2,
-    height: 22,
-    visible: true,
-  });
+  const [toolbarCoords, setToolbarCoords] = useState<ToolbarCoords>({ x: 0, y: 0 });
 
   const setProgrammaticSelection = useCallback(
     (
@@ -271,12 +187,156 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     []
   );
 
-  // Mount-only (or explicit externalCaretVersion) focus and selection placement.
-  // Never re-runs on normal cursor movement so mouse & Shift+Arrow selections are never collapsed!
+  // Measure selection bounding box inside hitTestRef's single Text node for the floating mini toolbar
+  const measureSelectionToolbarCoords = useCallback(
+    (start: number, end: number) => {
+      const hitTest = hitTestRef.current;
+      if (!hitTest || start === end) return;
+      const textNode = hitTest.firstChild;
+      if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return;
+
+      try {
+        const maxLen = textNode.textContent?.length ?? 0;
+        const range = document.createRange();
+        range.setStart(textNode, Math.min(maxLen, Math.max(0, start)));
+        range.setEnd(textNode, Math.min(maxLen, Math.max(0, end)));
+        const selRect = range.getBoundingClientRect();
+        const boxRect = hitTest.getBoundingClientRect();
+        if (selRect.width === 0 && selRect.height === 0) return;
+
+        const nextX = Math.max(0, Math.min(boxRect.width - 180, selRect.left - boxRect.left));
+        const nextY = Math.max(0, selRect.top - boxRect.top);
+        setToolbarCoords({ x: nextX, y: nextY });
+      } catch {
+        // Ignore range errors
+      }
+    },
+    []
+  );
+
+  // Lock textarea height to hitTestRef's natural offsetHeight on every render and resize (without ever setting height='0px'!)
+  const syncTextareaHeight = useCallback(() => {
+    const el = textareaRef.current;
+    const hitTest = hitTestRef.current;
+    if (!el || !hitTest) return;
+    const targetH = Math.max(hitTest.offsetHeight, 26);
+    if (el.style.height !== `${targetH}px`) {
+      el.style.height = `${targetH}px`;
+    }
+    if (el.scrollTop !== 0) {
+      el.scrollTop = 0;
+    }
+    if (el.scrollLeft !== 0) {
+      el.scrollLeft = 0;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    syncTextareaHeight();
+  });
+
+  useEffect(() => {
+    const hitTest = hitTestRef.current;
+    if (!hitTest || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      syncTextareaHeight();
+    });
+    ro.observe(hitTest);
+    return () => ro.disconnect();
+  }, [syncTextareaHeight]);
+
+  // Handle mouseDown activation (click placement AND live left-to-right / right-to-left drag selection)
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    const hitTest = hitTestRef.current;
+    if (!el || !hitTest || !pendingMouseDownPoint) return;
+    if (handledMouseSeqRef.current === pendingMouseDownPoint.seq) return;
+    handledMouseSeqRef.current = pendingMouseDownPoint.seq;
+
+    syncTextareaHeight();
+    el.focus({ preventScroll: true });
+    setIsFocused(true);
+
+    const anchorOffset = getCharOffsetFromPoint(
+      hitTest,
+      el,
+      pendingMouseDownPoint.clientX,
+      pendingMouseDownPoint.clientY,
+      el.value.length
+    );
+
+    el.setSelectionRange(anchorOffset, anchorOffset, 'none');
+    setSelRange({ start: anchorOffset, end: anchorOffset, direction: 'none' });
+    onCursorChangeRef.current?.(anchorOffset);
+
+    const onWindowMouseMove = (moveEvent: MouseEvent) => {
+      const curEl = textareaRef.current;
+      const curHitTest = hitTestRef.current;
+      if (!curEl || !curHitTest) return;
+
+      const focusOffset = getCharOffsetFromPoint(
+        curHitTest,
+        curEl,
+        moveEvent.clientX,
+        moveEvent.clientY,
+        curEl.value.length
+      );
+      const start = Math.min(anchorOffset, focusOffset);
+      const end = Math.max(anchorOffset, focusOffset);
+      const dir: 'forward' | 'backward' | 'none' =
+        focusOffset < anchorOffset
+          ? 'backward'
+          : focusOffset > anchorOffset
+          ? 'forward'
+          : 'none';
+
+      if (document.activeElement !== curEl) {
+        curEl.focus({ preventScroll: true });
+      }
+      curEl.setSelectionRange(start, end, dir);
+      setSelRange({ start, end, direction: dir });
+      onCursorChangeRef.current?.(focusOffset);
+      if (start !== end) {
+        measureSelectionToolbarCoords(start, end);
+      }
+    };
+
+    const onWindowMouseUp = () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+      const curEl = textareaRef.current;
+      if (curEl) {
+        const s = curEl.selectionStart ?? 0;
+        const e = curEl.selectionEnd ?? 0;
+        if (s !== e) {
+          measureSelectionToolbarCoords(s, e);
+        }
+      }
+    };
+
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+    };
+  }, [pendingMouseDownPoint, measureSelectionToolbarCoords, syncTextareaHeight]);
+
+  // Mount-only (or explicit externalCaretVersion) focus and selection placement when activated via keyboard
   useEffect(() => {
     const el = textareaRef.current;
     if (!el || !autoFocus) return;
+    if (
+      pendingMouseDownPoint &&
+      handledMouseSeqRef.current === pendingMouseDownPoint.seq
+    ) {
+      return;
+    }
+
+    syncTextareaHeight();
     el.focus({ preventScroll: true });
+    setIsFocused(true);
 
     if (initialSelection) {
       const s = Math.min(el.value.length, Math.max(0, initialSelection.start));
@@ -286,6 +346,9 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       const dir = initialSelection.direction || 'forward';
       el.setSelectionRange(start, end, dir);
       setSelRange({ start, end, direction: dir });
+      if (start !== end) {
+        measureSelectionToolbarCoords(start, end);
+      }
       return;
     }
 
@@ -293,23 +356,12 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       initialCaretOffset !== null
         ? Math.min(el.value.length, Math.max(0, initialCaretOffset))
         : el.value.length;
-    el.setSelectionRange(targetPos, targetPos);
+    el.setSelectionRange(targetPos, targetPos, 'none');
     setSelRange({ start: targetPos, end: targetPos, direction: 'none' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoFocus, externalCaretVersion]);
 
-  // Detect newly typed single character for Word-like character materialize animation
-  useEffect(() => {
-    if (value.length === prevValueRef.current.length + 1 && caretOffset > 0) {
-      setJustTypedIndex(caretOffset - 1);
-      const timer = window.setTimeout(() => setJustTypedIndex(null), 130);
-      prevValueRef.current = value;
-      return () => window.clearTimeout(timer);
-    }
-    prevValueRef.current = value;
-  }, [value, caretOffset]);
-
-  // Auto-resize textarea height ONLY when value changes, and apply any pending programmatic selection
+  // Apply any pending programmatic selection (e.g. Tab, Auto-Pair, Ctrl+B/I/K) synchronously on value update
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -320,49 +372,11 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
       const clampedStart = Math.min(value.length, Math.max(0, pending.start));
       const clampedEnd = Math.min(value.length, Math.max(clampedStart, pending.end));
       el.setSelectionRange(clampedStart, clampedEnd, pending.direction || 'forward');
-    }
-
-    el.style.height = '0px';
-    el.style.height = `${Math.max(el.scrollHeight, 26)}px`;
-  }, [value]);
-
-  // Measure exact sub-pixel (x, y, height) of caret in mirror layer without mutating selection state
-  const measureCaretDomCoords = useCallback(() => {
-    const el = textareaRef.current;
-    const mirror = mirrorRef.current;
-    const marker = markerRef.current;
-    if (!el || !mirror || !marker) return;
-
-    const mirrorRect = mirror.getBoundingClientRect();
-    const markerRect = marker.getBoundingClientRect();
-    const computedLineHeight = parseFloat(window.getComputedStyle(el).lineHeight) || 24;
-    const caretH = Math.max(18, Math.min(42, computedLineHeight * 0.82));
-    const yOffset = Math.max(0, (computedLineHeight - caretH) / 2);
-
-    const nextX = Math.max(0, markerRect.left - mirrorRect.left);
-    const nextY = Math.max(0, markerRect.top - mirrorRect.top + yOffset);
-
-    setCaretCoords((prev) => {
-      if (
-        Math.abs(prev.x - nextX) < 0.25 &&
-        Math.abs(prev.y - nextY) < 0.25 &&
-        Math.abs(prev.height - caretH) < 0.25 &&
-        prev.visible
-      ) {
-        return prev;
+      if (clampedStart !== clampedEnd) {
+        measureSelectionToolbarCoords(clampedStart, clampedEnd);
       }
-      return {
-        x: nextX,
-        y: nextY,
-        height: caretH,
-        visible: true,
-      };
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    measureCaretDomCoords();
-  }, [value, caretOffset, measureCaretDomCoords]);
+    }
+  }, [value, measureSelectionToolbarCoords]);
 
   // Sync selection state from user interaction on the native <textarea>
   const syncSelectionFromDom = useCallback(() => {
@@ -383,14 +397,10 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
 
     onCursorChangeRef.current?.(activeCaret);
 
-    if (motionBlur) {
-      setIsCaretMoving(true);
-      if (motionTimerRef.current) window.clearTimeout(motionTimerRef.current);
-      motionTimerRef.current = window.setTimeout(() => setIsCaretMoving(false), 90);
+    if (selStart !== selEnd) {
+      measureSelectionToolbarCoords(selStart, selEnd);
     }
-
-    requestAnimationFrame(measureCaretDomCoords);
-  }, [motionBlur, measureCaretDomCoords]);
+  }, [measureSelectionToolbarCoords]);
 
   const wrapSelectionWith = (prefix: string, suffix = prefix) => {
     const el = textareaRef.current;
@@ -410,18 +420,24 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
     });
   };
 
-  const beforeCaretText = value.slice(0, caretOffset);
-  const afterCaretText = value.slice(caretOffset);
-
   return (
-    <div className={`relative w-full ${className}`} style={style}>
+    <div
+      className={`relative grid w-full ${className}`}
+      style={{
+        gridTemplateColumns: 'minmax(0, 1fr)',
+        ...style,
+      }}
+    >
       {/* Contextual Mini Selection Toolbar right above selected text */}
       {isFocused && hasSelection && (
         <div
-          onMouseDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
           style={{
-            left: `${Math.max(0, Math.min(caretCoords.x, 320))}px`,
-            top: `${Math.max(-38, caretCoords.y - 38)}px`,
+            left: `${Math.max(0, toolbarCoords.x)}px`,
+            top: `${Math.max(-40, toolbarCoords.y - 40)}px`,
             borderColor: 'var(--border-color)',
             color: 'var(--text-color)',
           }}
@@ -478,35 +494,43 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
         </div>
       )}
 
-      {/* 1. Hidden Mirror Layer for Sub-Pixel Word Gliding Caret Measurement */}
+      {/* 1. Grid Auto-Sizer & Single-Text-Node Hit-Test Layer (100% identical metrics to native textarea) */}
       <div
-        ref={mirrorRef}
+        ref={hitTestRef}
         aria-hidden="true"
-        className="pointer-events-none invisible absolute inset-x-0 top-0 whitespace-pre-wrap break-words overflow-hidden"
+        className="pointer-events-none select-none whitespace-pre-wrap break-words min-h-[1.6em] m-0 p-0 border-0"
         style={{
+          gridArea: '1 / 1 / 2 / 2',
+          opacity: 0,
           fontFamily: 'inherit',
           fontSize: 'inherit',
           fontWeight: 'inherit',
+          fontStyle: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
           tabSize: 4,
         }}
       >
-        <span>{beforeCaretText}</span>
-        <span ref={markerRef} className="inline-block w-0 overflow-hidden">
-          &#8203;
-        </span>
-        <span>{afterCaretText || ' '}</span>
+        {`${value}\u200b`}
       </div>
 
-      {/* 2. Transparent Native Input Layer (z-10: receives all mouse/keyboard events and paints ::selection underneath z-20 text) */}
+      {/* 2. Direct Native Visible Textarea (100% Native Caret, 100% Native Click & Drag Selection, Zero Misalignment) */}
       <textarea
         ref={textareaRef}
         value={value}
+        placeholder={placeholder}
         rows={1}
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"
+        onScroll={(e) => {
+          if (e.currentTarget.scrollTop !== 0) {
+            e.currentTarget.scrollTop = 0;
+          }
+          if (e.currentTarget.scrollLeft !== 0) {
+            e.currentTarget.scrollLeft = 0;
+          }
+        }}
         onFocus={() => {
           setIsFocused(true);
           syncSelectionFromDom();
@@ -562,55 +586,18 @@ export const InlinePageInput: React.FC<InlinePageInputProps> = ({
             requestAnimationFrame(syncSelectionFromDom);
           }
         }}
-        className="no-export cursiv-transparent-textarea absolute inset-0 z-10 w-full h-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
+        className="no-export cursiv-native-textarea relative z-20 w-full bg-transparent border-0 outline-none resize-none overflow-hidden p-0 m-0"
         style={{
+          gridArea: '1 / 1 / 2 / 2',
           fontFamily: 'inherit',
           fontSize: 'inherit',
           fontWeight: 'inherit',
+          fontStyle: 'inherit',
           lineHeight: 'inherit',
           letterSpacing: 'inherit',
           tabSize: 4,
         }}
       />
-
-      {/* 3. Visible Direct-on-Page Formatted Layer (z-20 with pointer-events-none so text sits cleanly above ::selection) */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none relative z-20 whitespace-pre-wrap break-words min-h-[1.6em]"
-        style={{
-          fontFamily: 'inherit',
-          fontSize: 'inherit',
-          fontWeight: 'inherit',
-          lineHeight: 'inherit',
-          letterSpacing: 'inherit',
-          tabSize: 4,
-        }}
-      >
-        {value ? (
-          renderMetricLockedMarkdown(value, caretOffset, justTypedIndex)
-        ) : (
-          <span
-            className="opacity-30 select-none font-normal"
-            style={{ color: 'var(--meta-content-color)' }}
-          >
-            {placeholder || ''}
-          </span>
-        )}
-      </div>
-
-      {/* 4. Microsoft Word Smooth-Gliding Caret (with optional Kinetic Motion Blur) */}
-      {isFocused && !hasSelection && (
-        <div
-          aria-hidden="true"
-          className={`cursiv-word-caret ${
-            motionBlur && isCaretMoving ? 'cursiv-word-caret-motion-blur' : ''
-          } pointer-events-none absolute left-0 top-0 z-30`}
-          style={{
-            height: `${caretCoords.height}px`,
-            transform: `translate3d(${caretCoords.x}px, ${caretCoords.y}px, 0)`,
-          }}
-        />
-      )}
     </div>
   );
 };

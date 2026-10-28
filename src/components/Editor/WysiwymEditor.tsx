@@ -31,7 +31,7 @@ import {
 import { EmojiEntry, searchEmojis } from '../../utils/emojiDictionary';
 import { copyImageToLocalAssets } from '../../utils/tauriBridge';
 import { LiveInlineTokens } from './LiveInlineTokens';
-import { InlinePageInput, SelectionRangeSpec } from './InlinePageInput';
+import { InlinePageInput } from './InlinePageInput';
 import { ContextMenu, ContextMenuState } from './ContextMenu';
 import {
   filterSlashCommands,
@@ -51,11 +51,8 @@ interface WysiwymEditorProps {
   currentFilePath: string;
   sheetRef: React.RefObject<HTMLDivElement | null>;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
-  externalCaretOffset?: number | null;
-  externalCaretVersion?: number;
   onChangeBlocks: (nextBlocks: MarkdownBlock[]) => void;
   onSelectBlock: (blockId: string | null, cursorOffset?: number) => void;
-  onCursorOffsetChange?: (offset: number | null) => void;
   onActiveHeadingSlugChange?: (slug: string) => void;
   onOpenFile?: (pathOrName: string) => void;
 }
@@ -120,20 +117,12 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
   currentFilePath,
   sheetRef,
   scrollContainerRef,
-  externalCaretOffset = null,
-  externalCaretVersion = 0,
   onChangeBlocks,
   onSelectBlock,
-  onCursorOffsetChange,
   onActiveHeadingSlugChange,
   onOpenFile,
 }) => {
-  const [cursorOffset, setCursorOffsetState] = useState<number | null>(externalCaretOffset);
-  const [caretVersion, setCaretVersion] = useState<number>(0);
-  const [initialBlockSelection, setInitialBlockSelection] = useState<{
-    blockId: string;
-    spec: SelectionRangeSpec;
-  } | null>(null);
+  const [cursorOffset, setCursorOffset] = useState<number | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [collapsedHeadings, setCollapsedHeadings] = useState<Set<string>>(new Set());
   const [draggedBlockId, setDraggedBlockId] = useState<string | null>(null);
@@ -160,100 +149,6 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     results: SlashCommandItem[];
     selectedIndex: number;
   } | null>(null);
-
-  const setCursorOffset = (next: number | null, bumpVersion = false) => {
-    setCursorOffsetState(next);
-    onCursorOffsetChange?.(next);
-    if (bumpVersion) {
-      setCaretVersion((v) => v + 1);
-    }
-  };
-
-  useEffect(() => {
-    if (externalCaretVersion > 0 && externalCaretOffset !== null) {
-      setCursorOffsetState(externalCaretOffset);
-      setInitialBlockSelection(null);
-      setCaretVersion((v) => v + 1);
-    }
-  }, [externalCaretVersion, externalCaretOffset]);
-
-  // Activate an inactive block at the exact clicked character OR preserve a mouse drag selection (left->right or right->left)
-  const activateBlockFromMouse = (
-    e: React.MouseEvent<HTMLElement>,
-    blockId: string,
-    rawText: string
-  ) => {
-    const container = e.currentTarget;
-    const domSel = window.getSelection();
-
-    if (domSel && !domSel.isCollapsed && domSel.rangeCount > 0) {
-      const range = domSel.getRangeAt(0);
-      if (
-        container.contains(range.startContainer) &&
-        container.contains(range.endContainer)
-      ) {
-        const selectedStr = domSel.toString();
-        if (selectedStr.length > 0) {
-          // Compute visible character offset prior to selection start inside container
-          const preRange = document.createRange();
-          preRange.selectNodeContents(container);
-          preRange.setEnd(range.startContainer, range.startOffset);
-          const approxStart = preRange.toString().length;
-
-          // Match in rawText near approxStart
-          let foundIdx = rawText.indexOf(selectedStr, Math.max(0, approxStart - 16));
-          if (foundIdx === -1) {
-            foundIdx = rawText.indexOf(selectedStr);
-          }
-          if (foundIdx !== -1) {
-            // Determine if user dragged right-to-left ('backward') or left-to-right ('forward')
-            let isBackward = false;
-            if (domSel.anchorNode && domSel.focusNode) {
-              if (domSel.anchorNode === domSel.focusNode) {
-                isBackward = domSel.anchorOffset > domSel.focusOffset;
-              } else {
-                const pos = domSel.anchorNode.compareDocumentPosition(domSel.focusNode);
-                isBackward = Boolean(pos & Node.DOCUMENT_POSITION_PRECEDING);
-              }
-            }
-            const start = foundIdx;
-            const end = foundIdx + selectedStr.length;
-            const direction = isBackward ? 'backward' : 'forward';
-            domSel.removeAllRanges();
-            setInitialBlockSelection({
-              blockId,
-              spec: { start, end, direction },
-            });
-            setCursorOffset(isBackward ? start : end, true);
-            onSelectBlock(blockId, isBackward ? start : end);
-            return;
-          }
-        }
-      }
-    }
-
-    // Single click: find closest character offset from mouse coordinates
-    let targetOffset = rawText.length;
-    try {
-      const docAny = document as Document & {
-        caretRangeFromPoint?: (x: number, y: number) => Range | null;
-      };
-      const ptRange = docAny.caretRangeFromPoint?.(e.clientX, e.clientY);
-      if (ptRange && container.contains(ptRange.startContainer)) {
-        const preRange = document.createRange();
-        preRange.selectNodeContents(container);
-        preRange.setEnd(ptRange.startContainer, ptRange.startOffset);
-        const visibleOffset = preRange.toString().length;
-        targetOffset = Math.min(rawText.length, Math.max(0, visibleOffset));
-      }
-    } catch {
-      targetOffset = rawText.length;
-    }
-
-    setInitialBlockSelection(null);
-    setCursorOffset(targetOffset, true);
-    onSelectBlock(blockId, targetOffset);
-  };
 
   const blockDomRefs = useRef<Record<string, HTMLElement | null>>({});
   const markdownTransformTimerRef = useRef<number | null>(null);
@@ -569,17 +464,12 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
     }
   };
 
-  // Handle smart Auto-Pair, Tab character insertion, Slash Commands & Emoji autocomplete
+  // Handle smart Auto-Pair, Slash Commands & Emoji autocomplete on text inputs/textareas
   const handleSmartKeyDown = (
     e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>,
     block: MarkdownBlock,
     currentText: string,
-    applyNewText: (nextText: string, nextCursor: number) => void,
-    setProgrammaticSelection?: (
-      start: number,
-      end: number,
-      direction?: 'forward' | 'backward' | 'none'
-    ) => void
+    applyNewText: (nextText: string, nextCursor: number) => void
   ) => {
     const target = e.currentTarget;
     const selStart = target.selectionStart ?? 0;
@@ -653,9 +543,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           const before = currentText.slice(0, emojiPopup.colonIndex);
           const after = currentText.slice(selEnd);
           const inserted = `:${chosen.shortcode}: `;
-          const nextPos = before.length + inserted.length;
-          setProgrammaticSelection?.(nextPos, nextPos, 'none');
-          applyNewText(before + inserted + after, nextPos);
+          applyNewText(before + inserted + after, before.length + inserted.length);
           setEmojiPopup(null);
         }
         return;
@@ -664,52 +552,6 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         setEmojiPopup(null);
         return;
       }
-    }
-
-    // Tab key inserts a real Tab character `\t` (and Shift+Tab outdents)
-    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
-      if (!e.shiftKey) {
-        const nextText = currentText.slice(0, selStart) + '\t' + currentText.slice(selEnd);
-        const nextPos = selStart + 1;
-        setProgrammaticSelection?.(nextPos, nextPos, 'none');
-        applyNewText(nextText, nextPos);
-      } else {
-        if (selStart > 0 && currentText[selStart - 1] === '\t') {
-          const nextText = currentText.slice(0, selStart - 1) + currentText.slice(selEnd);
-          const nextPos = selStart - 1;
-          setProgrammaticSelection?.(nextPos, nextPos, 'none');
-          applyNewText(nextText, nextPos);
-        } else {
-          const lineStart = currentText.lastIndexOf('\n', selStart - 1) + 1;
-          if (currentText[lineStart] === '\t') {
-            const nextText =
-              currentText.slice(0, lineStart) + currentText.slice(lineStart + 1);
-            const nextStart = Math.max(lineStart, selStart - 1);
-            const nextEnd = Math.max(nextStart, selEnd - 1);
-            setProgrammaticSelection?.(nextStart, nextEnd, 'forward');
-            applyNewText(nextText, nextEnd);
-          }
-        }
-      }
-      return;
-    }
-
-    // Skip over closing bracket if typing `)`, `]`, `}` right before an existing one
-    if (
-      preferences.autoPairBrackets &&
-      selStart === selEnd &&
-      (e.key === ')' || e.key === ']' || e.key === '}') &&
-      currentText[selStart] === e.key &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey
-    ) {
-      e.preventDefault();
-      const nextPos = selStart + 1;
-      setProgrammaticSelection?.(nextPos, nextPos, 'none');
-      setCursorOffset(nextPos);
-      return;
     }
 
     // Auto-Pair Brackets & Markdown symbols
@@ -732,10 +574,14 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         closeChar +
         currentText.slice(selEnd);
 
-      const nextSelStart = selStart + 1;
-      const nextSelEnd = selStart !== selEnd ? selEnd + 1 : selStart + 1;
-      setProgrammaticSelection?.(nextSelStart, nextSelEnd, 'forward');
-      applyNewText(nextText, nextSelEnd);
+      const nextPos = selStart !== selEnd ? selEnd + 2 : selStart + 1;
+      applyNewText(nextText, nextPos);
+      requestAnimationFrame(() => {
+        target.setSelectionRange(
+          selStart + 1,
+          selStart !== selEnd ? selEnd + 1 : selStart + 1
+        );
+      });
       return;
     }
 
@@ -746,97 +592,67 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         e.preventDefault();
         const selectedSlice = currentText.slice(selStart, selEnd);
         let wrapped = '';
-        let innerStart = selStart;
-        let innerEnd = selEnd;
+        let cursorDelta = 0;
         if (keyLower === 'b') {
-          const content = selectedSlice || 'texte';
-          wrapped = `**${content}**`;
-          innerStart = selStart + 2;
-          innerEnd = innerStart + content.length;
+          wrapped = `**${selectedSlice || 'texte'}**`;
+          cursorDelta = selectedSlice ? wrapped.length : 2;
         } else if (keyLower === 'i') {
-          const content = selectedSlice || 'texte';
-          wrapped = `*${content}*`;
-          innerStart = selStart + 1;
-          innerEnd = innerStart + content.length;
+          wrapped = `*${selectedSlice || 'texte'}*`;
+          cursorDelta = selectedSlice ? wrapped.length : 1;
         } else {
-          const content = selectedSlice || 'lien';
-          wrapped = `[${content}](https://)`;
-          innerStart = selStart + content.length + 3;
-          innerEnd = innerStart + 8;
+          wrapped = `[${selectedSlice || 'lien'}](https://)`;
+          cursorDelta = wrapped.length - 1;
         }
         const nextText = currentText.slice(0, selStart) + wrapped + currentText.slice(selEnd);
-        setProgrammaticSelection?.(innerStart, innerEnd, 'forward');
-        applyNewText(nextText, innerEnd);
+        applyNewText(nextText, selStart + cursorDelta);
         return;
       }
     }
 
-    // Smooth Title -> Content navigation: pressing Enter in a Heading creates/focuses a paragraph below
+    // Smooth Title -> Content navigation: pressing Enter, Tab, or ArrowDown in a Heading
+    // immediately focuses the next block or creates a new paragraph below so the user never gets stuck.
     if (
       block.type === 'heading' &&
-      e.key === 'Enter' &&
-      !e.shiftKey &&
-      !e.ctrlKey &&
-      !e.altKey
+      (e.key === 'Enter' || e.key === 'Tab' || e.key === 'ArrowDown') &&
+      !e.shiftKey
     ) {
       e.preventDefault();
       const idx = blocks.findIndex((b) => b.id === block.id);
       const nextBlock = blocks[idx + 1];
-      if (nextBlock && nextBlock.type === 'paragraph' && nextBlock.text === '' && selEnd === currentText.length) {
-        setCursorOffset(0, true);
+      if (nextBlock && e.key !== 'Enter') {
         onSelectBlock(nextBlock.id, 0);
+        setCursorOffset(0);
+      } else if (nextBlock && nextBlock.type === 'paragraph' && nextBlock.text === '') {
+        onSelectBlock(nextBlock.id, 0);
+        setCursorOffset(0);
       } else {
-        const beforeCursor = currentText.slice(0, selStart);
-        const afterCursor = currentText.slice(selEnd);
         const newParaId = nextBlockId('p');
         const copy = [...blocks];
-        copy[idx] = {
-          ...block,
-          text: beforeCursor,
-          slug: slugifyHeading(beforeCursor || 'titre'),
-        };
-        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterCursor });
+        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: '' });
         onChangeBlocks(copy);
-        setCursorOffset(0, true);
         onSelectBlock(newParaId, 0);
+        setCursorOffset(0);
       }
       return;
     }
 
-    // Inter-block ArrowUp / ArrowDown navigation (ONLY when no Shift/Ctrl/Alt modifier is held and no text is selected)
-    if (
-      e.key === 'ArrowUp' &&
-      !e.shiftKey &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey &&
-      selStart === 0 &&
-      selEnd === 0
-    ) {
+    // Inter-block ArrowUp / ArrowDown navigation
+    if (e.key === 'ArrowUp' && selStart === 0) {
       const idx = blocks.findIndex((b) => b.id === block.id);
       if (idx > 0) {
         e.preventDefault();
         const prev = blocks[idx - 1];
-        setCursorOffset(999999, true);
-        onSelectBlock(prev.id, 999999);
+        onSelectBlock(prev.id, 9999);
         return;
       }
     }
-    if (
-      e.key === 'ArrowDown' &&
-      !e.shiftKey &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey &&
-      selStart === currentText.length &&
-      selEnd === currentText.length
-    ) {
+    if (e.key === 'ArrowDown' && selEnd === currentText.length) {
       const idx = blocks.findIndex((b) => b.id === block.id);
       if (idx >= 0 && idx < blocks.length - 1) {
         e.preventDefault();
         const next = blocks[idx + 1];
-        setCursorOffset(0, true);
         onSelectBlock(next.id, 0);
+        setCursorOffset(0);
         return;
       }
     }
@@ -930,7 +746,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       copy[idx] = { id: block.id, type: 'paragraph', text: beforeCursor };
       copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterCursor });
       onChangeBlocks(copy);
-      setCursorOffset(0, true);
+      setCursorOffset(0);
       onSelectBlock(newParaId, 0);
       return;
     }
@@ -944,7 +760,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
           ...block,
           level: nextLevel,
         }));
-        setCursorOffset(0, true);
+        setCursorOffset(0);
         onSelectBlock(block.id, 0);
         return;
       }
@@ -953,7 +769,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         type: 'paragraph',
         text: currentText,
       }));
-      setCursorOffset(0, true);
+      setCursorOffset(0);
       onSelectBlock(block.id, 0);
       return;
     }
@@ -981,7 +797,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                 };
           copy.splice(idx, 1);
           onChangeBlocks(copy);
-          setCursorOffset(joinOffset, true);
+          setCursorOffset(joinOffset);
           onSelectBlock(prevBlock.id, joinOffset);
           return;
         }
@@ -1885,23 +1701,12 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       onChange={(e) =>
                         updateSingleBlock(block.id, () => ({ ...block, raw: e.target.value }))
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') {
-                          e.preventDefault();
-                          const el = e.currentTarget;
-                          const s = el.selectionStart ?? 0;
-                          const end = el.selectionEnd ?? 0;
-                          const nextVal = block.raw.slice(0, s) + '\t' + block.raw.slice(end);
-                          updateSingleBlock(block.id, () => ({ ...block, raw: nextVal }));
-                          requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
-                        }
-                      }}
                       rows={Math.max(2, block.raw.split('\n').length)}
                       className="w-full bg-transparent outline-none resize-y font-mono text-xs"
-                      style={{ color: 'var(--text-color)', tabSize: 4 }}
+                      style={{ color: 'var(--text-color)' }}
                     />
                   ) : (
-                    <pre className="whitespace-pre-wrap m-0" style={{ tabSize: 4 }}>{block.raw}</pre>
+                    <pre className="whitespace-pre-wrap m-0">{block.raw}</pre>
                   )}
                 </div>
               )}
@@ -1930,11 +1735,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                           block.level <= 2 ? 'var(--border-color)' : 'transparent',
                       }}
                       className={`${sizeClasses[block.level]} flex items-baseline gap-1.5 cursor-text group/heading relative`}
-                      onClick={(e) => {
-                        if (!isActive) {
-                          activateBlockFromMouse(e, block.id, block.text);
-                        }
-                      }}
+                      onClick={() => onSelectBlock(block.id, block.text.length)}
                     >
                       <button
                         type="button"
@@ -1974,12 +1775,6 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                           multiline={false}
                           autoFocus
                           initialCaretOffset={cursorOffset}
-                          initialSelection={
-                            initialBlockSelection?.blockId === block.id
-                              ? initialBlockSelection.spec
-                              : null
-                          }
-                          externalCaretVersion={caretVersion}
                           motionBlur={preferences.caretMotionBlur}
                           smartTypography={preferences.smartTypography}
                           placeholder="Titre du document..."
@@ -1993,21 +1788,15 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                               slug: slugifyHeading(val),
                             }));
                           }}
-                          onKeyDown={(e, setProgrammaticSelection) =>
-                            handleSmartKeyDown(
-                              e,
-                              block,
-                              block.text,
-                              (nextText, nextPos) => {
-                                updateSingleBlock(block.id, () => ({
-                                  ...block,
-                                  text: nextText,
-                                  slug: slugifyHeading(nextText),
-                                }));
-                                setCursorOffset(nextPos);
-                              },
-                              setProgrammaticSelection
-                            )
+                          onKeyDown={(e) =>
+                            handleSmartKeyDown(e, block, block.text, (nextText, nextPos) => {
+                              updateSingleBlock(block.id, () => ({
+                                ...block,
+                                text: nextText,
+                                slug: slugifyHeading(nextText),
+                              }));
+                              setCursorOffset(nextPos);
+                            })
                           }
                           className="flex-1"
                         />
@@ -2099,9 +1888,9 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
               {block.type === 'paragraph' && (
                 <div
                   className="my-3.5 leading-[1.78] text-[1.03rem] cursor-text"
-                  onClick={(e) => {
+                  onClick={() => {
                     if (!isActive) {
-                      activateBlockFromMouse(e, block.id, block.text);
+                      onSelectBlock(block.id, block.text.length);
                     }
                   }}
                 >
@@ -2111,12 +1900,6 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       multiline={true}
                       autoFocus
                       initialCaretOffset={cursorOffset}
-                      initialSelection={
-                        initialBlockSelection?.blockId === block.id
-                          ? initialBlockSelection.spec
-                          : null
-                      }
-                      externalCaretVersion={caretVersion}
                       motionBlur={preferences.caretMotionBlur}
                       smartTypography={preferences.smartTypography}
                       placeholder="Rédigez ou tapez / pour les commandes (/title, /table, /code...)"
@@ -2136,21 +1919,15 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
 
                         updateSingleBlock(block.id, () => ({ ...block, text: val }));
                       }}
-                      onKeyDown={(e, setProgrammaticSelection) =>
-                        handleSmartKeyDown(
-                          e,
-                          block,
-                          block.text,
-                          (nextText, nextPos) => {
-                            updateSingleBlock(block.id, () => ({ ...block, text: nextText }));
-                            setCursorOffset(nextPos);
-                          },
-                          setProgrammaticSelection
-                        )
+                      onKeyDown={(e) =>
+                        handleSmartKeyDown(e, block, block.text, (nextText, nextPos) => {
+                          updateSingleBlock(block.id, () => ({ ...block, text: nextText }));
+                          setCursorOffset(nextPos);
+                        })
                       }
                     />
                   ) : (
-                    <p className="m-0 whitespace-pre-wrap break-words min-h-[1.6rem]" style={{ tabSize: 4 }}>
+                    <p className="m-0 whitespace-pre-wrap break-words min-h-[1.6rem]">
                       <LiveInlineTokens
                         text={block.text}
                         isBlockActive={false}
@@ -2430,23 +2207,11 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                               content: e.target.value,
                             }))
                           }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Tab') {
-                              e.preventDefault();
-                              const el = e.currentTarget;
-                              const s = el.selectionStart ?? 0;
-                              const end = el.selectionEnd ?? 0;
-                              const nextVal = block.content.slice(0, s) + '\t' + block.content.slice(end);
-                              updateSingleBlock(block.id, () => ({ ...block, content: nextVal }));
-                              requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
-                            }
-                          }}
                           rows={Math.max(1, block.content.split('\n').length)}
                           className="w-full bg-transparent outline-none text-sm resize-y"
-                          style={{ tabSize: 4 }}
                         />
                       ) : (
-                        <div className="text-sm leading-relaxed" style={{ tabSize: 4 }}>
+                        <div className="text-sm leading-relaxed">
                           <LiveInlineTokens
                             text={block.content}
                             isBlockActive={false}
@@ -2479,20 +2244,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       onChange={(e) =>
                         updateSingleBlock(block.id, () => ({ ...block, text: e.target.value }))
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') {
-                          e.preventDefault();
-                          const el = e.currentTarget;
-                          const s = el.selectionStart ?? 0;
-                          const end = el.selectionEnd ?? 0;
-                          const nextVal = block.text.slice(0, s) + '\t' + block.text.slice(end);
-                          updateSingleBlock(block.id, () => ({ ...block, text: nextVal }));
-                          requestAnimationFrame(() => el.setSelectionRange(s + 1, s + 1));
-                        }
-                      }}
                       rows={Math.max(1, block.text.split('\n').length)}
                       className="w-full bg-transparent outline-none resize-y"
-                      style={{ tabSize: 4 }}
                     />
                   ) : (
                     <LiveInlineTokens

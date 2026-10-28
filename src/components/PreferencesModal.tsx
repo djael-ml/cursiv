@@ -116,7 +116,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           </div>
 
           <div className="text-[11px] opacity-65 px-2 leading-relaxed">
-            <div className="font-semibold">Cursiv. v1.17.1</div>
+            <div className="font-semibold">Cursiv. v1.17.2</div>
             <div>Par Djaël Mola · Licence MIT</div>
           </div>
         </div>
