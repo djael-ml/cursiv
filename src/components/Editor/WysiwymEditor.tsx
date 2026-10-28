@@ -815,28 +815,66 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       }
     }
 
-    // Tab key inserts a real Tab character `\t` (and Shift+Tab outdents)
+    // Line & indentation geometry around current selection
+    const lineStart = currentText.lastIndexOf('\n', Math.max(0, selStart - 1)) + 1;
+    const nextNl = currentText.indexOf('\n', selEnd);
+    const lineEnd = nextNl === -1 ? currentText.length : nextNl;
+    const currentFullLine = currentText.slice(lineStart, lineEnd);
+    const lineBeforeCursor = currentText.slice(lineStart, selStart);
+    const indentMatch = currentFullLine.match(/^([\t ]+)/);
+    const leadingIndent = indentMatch ? indentMatch[1] : '';
+    const indentBeforeCursorMatch = lineBeforeCursor.match(/^([\t ]+)/);
+    const effectiveIndent = indentBeforeCursorMatch ? indentBeforeCursorMatch[1] : leadingIndent;
+    const isLineOnlyWhitespace = currentFullLine.trim() === '';
+
+    // Tab key inserts a real Tab character `\t` (or indents multi-line selection), Shift+Tab outdents
     if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
+      const selectedSlice = currentText.slice(selStart, selEnd);
+      if (selStart !== selEnd && selectedSlice.includes('\n')) {
+        const blockStart = currentText.lastIndexOf('\n', Math.max(0, selStart - 1)) + 1;
+        const endNl = currentText.indexOf('\n', selEnd);
+        const blockEnd = endNl === -1 ? currentText.length : endNl;
+        const rawLines = currentText.slice(blockStart, blockEnd).split('\n');
+        const transformedLines = rawLines.map((l) =>
+          !e.shiftKey ? `\t${l}` : l.replace(/^(\t| {1,4})/, '')
+        );
+        const joined = transformedLines.join('\n');
+        const nextText = currentText.slice(0, blockStart) + joined + currentText.slice(blockEnd);
+        const nextStart = blockStart;
+        const nextEnd = blockStart + joined.length;
+        setProgrammaticSelection?.(nextStart, nextEnd, 'forward');
+        applyNewText(nextText, nextEnd);
+        return;
+      }
+
       if (!e.shiftKey) {
         const nextText = currentText.slice(0, selStart) + '\t' + currentText.slice(selEnd);
         const nextPos = selStart + 1;
         setProgrammaticSelection?.(nextPos, nextPos, 'none');
         applyNewText(nextText, nextPos);
       } else {
-        if (selStart > 0 && currentText[selStart - 1] === '\t') {
+        if (selStart === selEnd && selStart > 0 && currentText[selStart - 1] === '\t') {
           const nextText = currentText.slice(0, selStart - 1) + currentText.slice(selEnd);
           const nextPos = selStart - 1;
           setProgrammaticSelection?.(nextPos, nextPos, 'none');
           applyNewText(nextText, nextPos);
+        } else if (currentText[lineStart] === '\t') {
+          const nextText =
+            currentText.slice(0, lineStart) + currentText.slice(lineStart + 1);
+          const nextStart = Math.max(lineStart, selStart - 1);
+          const nextEnd = Math.max(nextStart, selEnd - 1);
+          setProgrammaticSelection?.(nextStart, nextEnd, selStart === selEnd ? 'none' : 'forward');
+          applyNewText(nextText, nextEnd);
         } else {
-          const lineStart = currentText.lastIndexOf('\n', selStart - 1) + 1;
-          if (currentText[lineStart] === '\t') {
+          const spaceMatch = currentText.slice(lineStart).match(/^( {1,4})/);
+          if (spaceMatch) {
+            const rmLen = spaceMatch[1].length;
             const nextText =
-              currentText.slice(0, lineStart) + currentText.slice(lineStart + 1);
-            const nextStart = Math.max(lineStart, selStart - 1);
-            const nextEnd = Math.max(nextStart, selEnd - 1);
-            setProgrammaticSelection?.(nextStart, nextEnd, 'forward');
+              currentText.slice(0, lineStart) + currentText.slice(lineStart + rmLen);
+            const nextStart = Math.max(lineStart, selStart - rmLen);
+            const nextEnd = Math.max(nextStart, selEnd - rmLen);
+            setProgrammaticSelection?.(nextStart, nextEnd, selStart === selEnd ? 'none' : 'forward');
             applyNewText(nextText, nextEnd);
           }
         }
@@ -920,18 +958,69 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       }
     }
 
-    // Smooth Title -> Content navigation: pressing Enter in a Heading creates/focuses a paragraph below
+    // Cancel any pending debounced Markdown transform when pressing Enter / Shift+Enter / Ctrl+Enter
+    if (e.key === 'Enter' && markdownTransformTimerRef.current) {
+      window.clearTimeout(markdownTransformTimerRef.current);
+      markdownTransformTimerRef.current = null;
+    }
+
+    // Ctrl+Enter (or Cmd+Enter) in Paragraph / Heading / Callout / Blockquote immediately creates a new Paragraph block below
+    if (
+      e.key === 'Enter' &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey &&
+      (block.type === 'paragraph' ||
+        block.type === 'heading' ||
+        block.type === 'callout' ||
+        block.type === 'blockquote')
+    ) {
+      e.preventDefault();
+      const idx = blocks.findIndex((b) => b.id === block.id);
+      const newParaId = nextBlockId('p');
+      const copy = [...blocks];
+      if (block.type === 'paragraph' || block.type === 'heading') {
+        const beforeCursor = currentText.slice(0, selStart);
+        const afterCursor = currentText.slice(selEnd);
+        copy[idx] =
+          block.type === 'heading'
+            ? { ...block, text: beforeCursor, slug: slugifyHeading(beforeCursor || 'titre') }
+            : { id: block.id, type: 'paragraph', text: beforeCursor };
+        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterCursor });
+      } else {
+        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: '' });
+      }
+      onChangeBlocks(copy);
+      setCursorOffset(0, true);
+      onSelectBlock(newParaId, 0);
+      return;
+    }
+
+    // Smooth Title -> Content navigation: pressing Enter or Shift+Enter in a Heading creates/focuses a paragraph below (or above if at offset 0)
     if (
       block.type === 'heading' &&
       e.key === 'Enter' &&
-      !e.shiftKey &&
       !e.ctrlKey &&
+      !e.metaKey &&
       !e.altKey
     ) {
       e.preventDefault();
       const idx = blocks.findIndex((b) => b.id === block.id);
+      if (selStart === 0 && selEnd === 0 && currentText.trim().length > 0) {
+        const newParaId = nextBlockId('p');
+        const copy = [...blocks];
+        copy.splice(idx, 0, { id: newParaId, type: 'paragraph', text: '' });
+        onChangeBlocks(copy);
+        setCursorOffset(0, true);
+        onSelectBlock(newParaId, 0);
+        return;
+      }
       const nextBlock = blocks[idx + 1];
-      if (nextBlock && nextBlock.type === 'paragraph' && nextBlock.text === '' && selEnd === currentText.length) {
+      if (
+        nextBlock &&
+        nextBlock.type === 'paragraph' &&
+        nextBlock.text === '' &&
+        selEnd === currentText.length
+      ) {
         setCursorOffset(0, true);
         onSelectBlock(nextBlock.id, 0);
       } else {
@@ -949,6 +1038,86 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         setCursorOffset(0, true);
         onSelectBlock(newParaId, 0);
       }
+      return;
+    }
+
+    // Shift+Enter (Maj+Entrée) in Paragraph / Callout / Blockquote / YAML:
+    // Inserts a soft line break preserving current line's Tab indentation (or steps back 1 tab level if on an empty tabbed line)
+    if (
+      e.key === 'Enter' &&
+      e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      (block.type === 'paragraph' ||
+        block.type === 'callout' ||
+        block.type === 'blockquote' ||
+        block.type === 'yaml')
+    ) {
+      e.preventDefault();
+      if (isLineOnlyWhitespace && leadingIndent.length > 0) {
+        // Step back one tab level (or clear if single tab) on the current empty tabbed line
+        const reducedIndent = leadingIndent.replace(/(\t| {1,4})$/, '');
+        const nextText =
+          currentText.slice(0, lineStart) + reducedIndent + currentText.slice(lineEnd);
+        const nextPos = lineStart + reducedIndent.length;
+        setProgrammaticSelection?.(nextPos, nextPos, 'none');
+        applyNewText(nextText, nextPos);
+        return;
+      }
+      const insertion = `\n${effectiveIndent}`;
+      const nextText =
+        currentText.slice(0, selStart) + insertion + currentText.slice(selEnd);
+      const nextPos = selStart + insertion.length;
+      setProgrammaticSelection?.(nextPos, nextPos, 'none');
+      applyNewText(nextText, nextPos);
+      return;
+    }
+
+    // Enter (without Shift) in Callout / Blockquote:
+    // Keeps Tab indentation on new lines; exits Tab on second Enter; exits Callout/Blockquote on empty unindented trailing line
+    if (
+      e.key === 'Enter' &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      (block.type === 'callout' || block.type === 'blockquote')
+    ) {
+      e.preventDefault();
+      if (isLineOnlyWhitespace && leadingIndent.length > 0) {
+        // Exit Tab indentation on the current empty line
+        const nextText = currentText.slice(0, lineStart) + currentText.slice(lineEnd);
+        setProgrammaticSelection?.(lineStart, lineStart, 'none');
+        applyNewText(nextText, lineStart);
+        return;
+      }
+      if (isLineOnlyWhitespace && leadingIndent === '' && lineEnd === currentText.length) {
+        // Exit Callout / Blockquote into a new Paragraph block below
+        const cleaned = currentText.slice(0, Math.max(0, lineStart - 1));
+        const newParaId = nextBlockId('p');
+        const idx = blocks.findIndex((b) => b.id === block.id);
+        const copy = [...blocks];
+        if (!cleaned && block.type === 'blockquote') {
+          copy[idx] = { id: newParaId, type: 'paragraph', text: '' };
+        } else {
+          copy[idx] =
+            block.type === 'callout'
+              ? { ...block, content: cleaned }
+              : { ...block, text: cleaned };
+          copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: '' });
+        }
+        onChangeBlocks(copy);
+        setCursorOffset(0, true);
+        onSelectBlock(newParaId, 0);
+        return;
+      }
+      const insertion = `\n${effectiveIndent}`;
+      const nextText =
+        currentText.slice(0, selStart) + insertion + currentText.slice(selEnd);
+      const nextPos = selStart + insertion.length;
+      setProgrammaticSelection?.(nextPos, nextPos, 'none');
+      applyNewText(nextText, nextPos);
       return;
     }
 
@@ -990,11 +1159,16 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
       }
     }
 
-    // Live block triggers on Enter (e.g., typing `$$` + Enter, `[TOC]` + Enter, ` ```lang ` + Enter, `| a | b |` + Enter)
-    if (e.key === 'Enter' && !e.shiftKey && block.type === 'paragraph') {
+    // Smart Enter in a Paragraph:
+    // 1. Triggers Markdown blocks (`$`, `[TOC]`, `---`, ```lang, `# Heading`, `| Table |`, Lists)
+    // 2. When in a Tab (`leadingIndent.length > 0`) with text: stays in the Tab on the new line (`\n` + `effectiveIndent`)
+    // 3. When on an empty Tabbed line (`isLineOnlyWhitespace && leadingIndent.length > 0`): exits the Tab to column 0!
+    // 4. When on an empty unindented line (`isLineOnlyWhitespace && leadingIndent === ''`): splits into a new Paragraph block!
+    // 5. When on a normal line with text: inserts `\n` (compact line break; press Enter a second time for a new Paragraph block)
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && block.type === 'paragraph') {
       const trimmed = currentText.trim();
 
-      if (trimmed === '$$') {
+      if (trimmed === '$') {
         e.preventDefault();
         replaceBlockWithMultiple(block.id, [
           { id: nextBlockId('math'), type: 'math', latex: '\\int_{a}^{b} f(x)\\,\\dd x' },
@@ -1050,6 +1224,81 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         return;
       }
 
+      // Direct list creation on Enter if single-line paragraph starts with `- `, `1. `, or `- [ ] `
+      if (!currentText.includes('\n')) {
+        const taskTrig =
+          currentText.match(/^[-*+]\s+\[([ xX])\]\s+(.*)$/) ||
+          currentText.match(/^\[\]\s+(.*)$/);
+        if (taskTrig) {
+          e.preventDefault();
+          const checked = taskTrig.length === 3 ? taskTrig[1].toLowerCase() === 'x' : false;
+          const firstText = (taskTrig.length === 3 ? taskTrig[2] : taskTrig[1]) || '';
+          const firstId = nextBlockId('li');
+          const secondId = nextBlockId('li');
+          const listId = nextBlockId('list');
+          replaceBlockWithMultiple(block.id, [
+            {
+              id: listId,
+              type: 'list',
+              listType: 'task',
+              items: [
+                { id: firstId, indent: 0, checked, text: firstText },
+                ...(firstText.trim()
+                  ? [{ id: secondId, indent: 0, checked: false, text: '' }]
+                  : []),
+              ],
+            },
+          ]);
+          setActiveListItemId(firstText.trim() ? secondId : firstId);
+          setCursorOffset(0, true);
+          return;
+        }
+
+        const bulletTrig = currentText.match(/^[-*+]\s+(.+)$/);
+        if (bulletTrig) {
+          e.preventDefault();
+          const firstId = nextBlockId('li');
+          const secondId = nextBlockId('li');
+          const listId = nextBlockId('list');
+          replaceBlockWithMultiple(block.id, [
+            {
+              id: listId,
+              type: 'list',
+              listType: 'bullet',
+              items: [
+                { id: firstId, indent: 0, text: bulletTrig[1] },
+                { id: secondId, indent: 0, text: '' },
+              ],
+            },
+          ]);
+          setActiveListItemId(secondId);
+          setCursorOffset(0, true);
+          return;
+        }
+
+        const orderedTrig = currentText.match(/^\d+\.\s+(.+)$/);
+        if (orderedTrig) {
+          e.preventDefault();
+          const firstId = nextBlockId('li');
+          const secondId = nextBlockId('li');
+          const listId = nextBlockId('list');
+          replaceBlockWithMultiple(block.id, [
+            {
+              id: listId,
+              type: 'list',
+              listType: 'ordered',
+              items: [
+                { id: firstId, indent: 0, text: orderedTrig[1] },
+                { id: secondId, indent: 0, text: '' },
+              ],
+            },
+          ]);
+          setActiveListItemId(secondId);
+          setCursorOffset(0, true);
+          return;
+        }
+      }
+
       // Direct table creation via `| Col 1 | Col 2 |` + Enter
       if (trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.split('|').length >= 3) {
         e.preventDefault();
@@ -1069,18 +1318,52 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
         return;
       }
 
-      // Split paragraph cleanly at the cursor position on Enter (Shift+Enter inserts soft line break)
       e.preventDefault();
-      const beforeCursor = currentText.slice(0, selStart);
-      const afterCursor = currentText.slice(selEnd);
-      const newParaId = nextBlockId('p');
-      const idx = blocks.findIndex((b) => b.id === block.id);
-      const copy = [...blocks];
-      copy[idx] = { id: block.id, type: 'paragraph', text: beforeCursor };
-      copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterCursor });
-      onChangeBlocks(copy);
-      setCursorOffset(0, true);
-      onSelectBlock(newParaId, 0);
+
+      // Case 1: Cursor is on an empty line that has Tab/space indentation -> Exit the Tab to column 0!
+      if (isLineOnlyWhitespace && leadingIndent.length > 0) {
+        const nextText = currentText.slice(0, lineStart) + currentText.slice(lineEnd);
+        setProgrammaticSelection?.(lineStart, lineStart, 'none');
+        applyNewText(nextText, lineStart);
+        return;
+      }
+
+      // Case 2: Cursor is at the very start of a non-empty unindented paragraph -> Insert empty paragraph above
+      if (selStart === 0 && selEnd === 0 && currentText.trim().length > 0 && leadingIndent === '') {
+        const newParaId = nextBlockId('p');
+        const idx = blocks.findIndex((b) => b.id === block.id);
+        const copy = [...blocks];
+        copy.splice(idx, 0, { id: newParaId, type: 'paragraph', text: '' });
+        onChangeBlocks(copy);
+        setCursorOffset(0, true);
+        onSelectBlock(block.id, 0);
+        return;
+      }
+
+      // Case 3: Cursor is on an empty unindented line -> Split into a new Paragraph block below!
+      if (isLineOnlyWhitespace && leadingIndent === '') {
+        const beforeEmptyLine =
+          lineStart > 0 ? currentText.slice(0, lineStart - 1) : '';
+        const afterEmptyLine =
+          lineEnd < currentText.length ? currentText.slice(lineEnd + 1) : '';
+        const newParaId = nextBlockId('p');
+        const idx = blocks.findIndex((b) => b.id === block.id);
+        const copy = [...blocks];
+        copy[idx] = { id: block.id, type: 'paragraph', text: beforeEmptyLine };
+        copy.splice(idx + 1, 0, { id: newParaId, type: 'paragraph', text: afterEmptyLine });
+        onChangeBlocks(copy);
+        setCursorOffset(0, true);
+        onSelectBlock(newParaId, 0);
+        return;
+      }
+
+      // Case 4: Current line has text -> Insert line break `\n` and preserve `effectiveIndent` (stays in Tab if tabbed!)
+      const insertion = `\n${effectiveIndent}`;
+      const nextText =
+        currentText.slice(0, selStart) + insertion + currentText.slice(selEnd);
+      const nextPos = selStart + insertion.length;
+      setProgrammaticSelection?.(nextPos, nextPos, 'none');
+      applyNewText(nextText, nextPos);
       return;
     }
 
@@ -3192,8 +3475,38 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                                       return;
                                     }
 
-                                    // Enter splits list item or exits list when empty
-                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                    // Shift+Enter (Maj+Entrée) inside a list item inserts a soft line break preserving inner Tab indentation
+                                    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                                      e.preventDefault();
+                                      const liLineStart = item.text.lastIndexOf('\n', Math.max(0, selStart - 1)) + 1;
+                                      const liNextNl = item.text.indexOf('\n', selEnd);
+                                      const liLineEnd = liNextNl === -1 ? item.text.length : liNextNl;
+                                      const liFullLine = item.text.slice(liLineStart, liLineEnd);
+                                      const liIndent = (liFullLine.match(/^([\t ]+)/) || ['', ''])[1];
+                                      if (liFullLine.trim() === '' && liIndent.length > 0) {
+                                        const nextVal = item.text.slice(0, liLineStart) + item.text.slice(liLineEnd);
+                                        setProgrammaticSelection?.(liLineStart, liLineStart, 'none');
+                                        const nextItems = block.items.map((it, i) =>
+                                          i === itemIdx ? { ...it, text: nextVal } : it
+                                        );
+                                        updateSingleBlock(block.id, () => ({ ...block, items: nextItems }));
+                                        setCursorOffset(liLineStart);
+                                        return;
+                                      }
+                                      const ins = `\n${liIndent}`;
+                                      const nextVal = item.text.slice(0, selStart) + ins + item.text.slice(selEnd);
+                                      const nextPos = selStart + ins.length;
+                                      setProgrammaticSelection?.(nextPos, nextPos, 'none');
+                                      const nextItems = block.items.map((it, i) =>
+                                        i === itemIdx ? { ...it, text: nextVal } : it
+                                      );
+                                      updateSingleBlock(block.id, () => ({ ...block, items: nextItems }));
+                                      setCursorOffset(nextPos);
+                                      return;
+                                    }
+
+                                    // Enter splits list item, un-indents on empty indented item, or exits list when empty at indent 0
+                                    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
                                       e.preventDefault();
                                       if (item.text.trim() === '') {
                                         if (item.indent > 0) {
@@ -3234,7 +3547,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                                         return;
                                       }
 
-                                      const before = item.text.slice(0, selStart);
+                                      const before = item.text.slice(0, selStart).replace(/\n[\t ]*$/, '');
                                       const after = item.text.slice(selEnd);
                                       const newItemId = nextBlockId('li');
                                       const nextItems = [...block.items];
@@ -3339,7 +3652,8 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                                 />
                               ) : (
                                 <div
-                                  className={`flex-1 min-h-[1.5rem] ${
+                                  style={{ tabSize: 4 }}
+                                  className={`flex-1 min-h-[1.5rem] whitespace-pre-wrap break-words ${
                                     item.checked ? 'line-through opacity-60' : ''
                                   }`}
                                 >
@@ -3466,7 +3780,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       </div>
 
                       <div
-                        className="text-sm leading-relaxed cursor-text"
+                        className="text-sm leading-relaxed cursor-text whitespace-pre-wrap break-words"
                         style={{ tabSize: 4 }}
                         onMouseDown={(e) => {
                           if (e.button !== 0) return;
@@ -3628,7 +3942,7 @@ export const WysiwymEditor: React.FC<WysiwymEditorProps> = ({
                       }}
                     />
                   ) : (
-                    <div className="min-h-[1.5rem]" style={{ tabSize: 4 }}>
+                    <div className="min-h-[1.5rem] whitespace-pre-wrap break-words" style={{ tabSize: 4 }}>
                       <LiveInlineTokens
                         text={block.text}
                         isBlockActive={false}

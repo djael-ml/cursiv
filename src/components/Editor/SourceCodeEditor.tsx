@@ -90,6 +90,47 @@ export const SourceCodeEditor: React.FC<SourceCodeEditorProps> = ({
         langCompartment.current.of(resolveLanguageExtension(fileDescriptor.cmLanguage)),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         keymap.of([
+          {
+            key: 'Tab',
+            run: (view) => {
+              const sel = view.state.selection.main;
+              if (sel.empty) {
+                view.dispatch({
+                  changes: { from: sel.from, to: sel.to, insert: '\t' },
+                  selection: { anchor: sel.from + 1 },
+                });
+                return true;
+              }
+              return false;
+            },
+          },
+          {
+            key: 'Enter',
+            run: (view) => {
+              const sel = view.state.selection.main;
+              if (!sel.empty) return false;
+              const line = view.state.doc.lineAt(sel.head);
+              const indentMatch = line.text.match(/^([\t ]+)/);
+              const leading = indentMatch ? indentMatch[1] : '';
+              if (leading.length > 0 && line.text.trim() === '') {
+                // Pressing Enter on an empty indented line exits the Tab indentation to column 0
+                view.dispatch({
+                  changes: { from: line.from, to: line.to, insert: '' },
+                  selection: { anchor: line.from },
+                });
+                return true;
+              }
+              if (leading.length > 0) {
+                const insertStr = `\n${leading}`;
+                view.dispatch({
+                  changes: { from: sel.from, to: sel.to, insert: insertStr },
+                  selection: { anchor: sel.from + insertStr.length },
+                });
+                return true;
+              }
+              return false;
+            },
+          },
           ...closeBracketsKeymap,
           ...searchKeymap,
           ...defaultKeymap,
